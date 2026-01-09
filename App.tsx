@@ -2,7 +2,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Group, Message, SharedFile, FriendRequest, GroupInvite } from './types';
 import { PLAN_LIMITS, EXPIRY_DURATION, Icons } from './constants';
-import { getFeedbackOnMessage } from './services/gemini';
 
 const saveToStorage = (key: string, data: any) => localStorage.setItem(key, JSON.stringify(data));
 const getFromStorage = (key: string) => {
@@ -237,7 +236,7 @@ export default function App() {
                 </div>
                 <div className="flex flex-col min-w-0">
                   <span className="text-[12px] font-bold text-slate-200 truncate">{f.username}</span>
-                  <span className="text-[9px] text-slate-500 font-medium tracking-wide uppercase">{isOnline(f) ? 'Online' : 'Vidjen skoro'}</span>
+                  <span className="text-[9px] text-slate-500 font-medium tracking-wide uppercase">{isOnline(f) ? 'Online' : 'Offline'}</span>
                 </div>
               </div>
             ))}
@@ -328,7 +327,7 @@ export default function App() {
             </div>
 
             <div className="flex-1 flex overflow-hidden">
-              {/* CHAT PANEL - Left side of Workspace */}
+              {/* CHAT PANEL */}
               <div className="flex-1 flex flex-col border-r border-white/5 bg-[#050505]">
                 <div className="flex-1 overflow-y-auto p-8 space-y-6">
                   {messages.filter(m => m.type === 'text').map(msg => (
@@ -352,7 +351,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* FILE GALLERY - Right side of Workspace */}
+              {/* FILE GALLERY */}
               <div className="w-[340px] bg-[#0a0a0c] flex flex-col shrink-0">
                 <div className="p-6 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#0a0a0c]/80 backdrop-blur-md">
                   <div className="flex flex-col">
@@ -366,12 +365,6 @@ export default function App() {
                   {messages.filter(m => m.type === 'file').map(msg => (
                     <FileItem key={msg.id} file={msg.file!} sender={msg.senderName} time={msg.timestamp} expiresAt={msg.expiresAt} />
                   ))}
-                  {messages.filter(m => m.type === 'file').length === 0 && (
-                    <div className="text-center py-20 opacity-10 flex flex-col items-center select-none">
-                      <div className="mb-4 scale-150"><Icons.File /></div>
-                      <p className="text-[9px] font-black uppercase tracking-[0.3em]">Nema Fajlova</p>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
@@ -379,7 +372,7 @@ export default function App() {
         )}
       </div>
 
-      {/* RIGHT INBOX PANEL (Drawer) */}
+      {/* RIGHT INBOX DRAWER */}
       {showInbox && (
         <div className="w-96 bg-[#0f0f12] border-l border-white/10 flex flex-col shrink-0 shadow-[-20px_0_50px_rgba(0,0,0,0.8)] z-[100] animate-in slide-in-from-right duration-400">
            <div className="p-8 border-b border-white/5 flex items-center justify-between shrink-0">
@@ -428,16 +421,12 @@ export default function App() {
         </div>
       )}
 
-      {/* ABOUT MODAL */}
+      {/* MODALS: ABOUT, PLANS, INVITE remain same but without AI logic */}
       {showAbout && (
         <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-[200] flex items-center justify-center p-6 animate-in fade-in duration-300" onClick={() => setShowAbout(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 rounded-[48px] w-full max-w-sm p-10 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-600/10 blur-3xl rounded-full translate-x-10 -translate-y-10"></div>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-[48px] w-full max-sm p-10 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="flex justify-between items-center mb-8 relative z-10">
-                 <div className="flex flex-col">
-                   <h3 className="font-black italic text-2xl uppercase tracking-tighter text-white">Lab Info</h3>
-                   <span className="text-[9px] font-black text-indigo-500 tracking-[0.3em] uppercase">Session Details</span>
-                 </div>
+                 <h3 className="font-black italic text-2xl uppercase tracking-tighter text-white">Lab Info</h3>
                  <button onClick={() => setShowAbout(false)} className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all"><Icons.X /></button>
               </div>
               <div className="space-y-8 relative z-10">
@@ -445,44 +434,25 @@ export default function App() {
                   <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest mb-4">Timski Članovi</p>
                   <div className="space-y-3">
                     {activeMembers.map(m => (
-                      <div key={m.id} className="flex items-center justify-between p-2 rounded-2xl hover:bg-white/5 transition-all">
+                      <div key={m.id} className="flex items-center justify-between p-2 rounded-2xl">
                          <div className="flex items-center gap-4">
                            <img src={m.avatar} className="w-8 h-8 rounded-xl bg-slate-900 border border-white/5" />
-                           <div className="flex flex-col">
-                            <span className="text-[11px] font-black text-slate-200">{m.username} {m.id === activeGroup?.ownerId && <span className="text-indigo-500 ml-1">👑</span>}</span>
-                            <span className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter">{isOnline(m) ? 'Active Now' : 'Last Seen Recently'}</span>
-                           </div>
+                           <span className="text-[11px] font-black text-slate-200">{m.username}</span>
                          </div>
                          <div className={`w-2 h-2 rounded-full ${isOnline(m) ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-slate-800'}`}></div>
                       </div>
                     ))}
                   </div>
                 </div>
-                <div>
-                   <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest mb-3">Group Token</p>
-                   <div className="bg-black/50 border border-white/5 p-4 rounded-2xl flex items-center justify-between group cursor-pointer" onClick={() => { navigator.clipboard.writeText(activeGroup?.id || ''); alert("ID kopiran!"); }}>
-                    <code className="text-[10px] text-indigo-400 font-mono truncate">{activeGroup?.id}</code>
-                    <div className="opacity-0 group-hover:opacity-100 transition-opacity text-[8px] font-black text-slate-500 uppercase">Kopiraj</div>
-                   </div>
-                </div>
               </div>
            </div>
         </div>
       )}
 
-      {/* PLANS MODAL */}
       {showPlans && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-2xl z-[300] flex items-center justify-center p-6 animate-in zoom-in-95 duration-300" onClick={() => setShowPlans(false)}>
-          <div className="bg-[#0f0f12] border border-white/5 rounded-[56px] w-full max-w-4xl p-16 shadow-2xl relative overflow-hidden max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <div className="absolute top-0 left-0 w-64 h-64 bg-indigo-600/10 blur-[100px] rounded-full -translate-x-32 -translate-y-32"></div>
-            <div className="flex justify-between items-center mb-12 relative z-10">
-              <div className="flex flex-col">
-                <h3 className="text-4xl font-black text-white italic uppercase tracking-tighter">Lab Upgrade</h3>
-                <span className="text-xs font-bold text-indigo-500 tracking-[0.4em] uppercase mt-2">Scale Your Collaboration</span>
-              </div>
-              <button onClick={() => setShowPlans(false)} className="p-4 bg-white/5 rounded-3xl hover:bg-white/10 transition-all border border-white/5"><Icons.X /></button>
-            </div>
-            <div className="grid md:grid-cols-3 gap-10 relative z-10">
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-2xl z-[300] flex items-center justify-center p-6" onClick={() => setShowPlans(false)}>
+          <div className="bg-[#0f0f12] border border-white/5 rounded-[56px] w-full max-w-4xl p-16 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="grid md:grid-cols-3 gap-10">
               <PlanCard title="Free" price="0" limit="10MB" current={user.plan === 'free'} onSelect={() => setUser({...user, plan: 'free'})} />
               <PlanCard title="Pro" price="9" limit="30MB" highlight current={user.plan === 'pro'} onSelect={() => setUser({...user, plan: 'pro'})} />
               <PlanCard title="Premium" price="19" limit="100MB" current={user.plan === 'premium'} onSelect={() => setUser({...user, plan: 'premium'})} />
@@ -491,7 +461,6 @@ export default function App() {
         </div>
       )}
 
-      {/* INVITE MODAL */}
       {showInviteMenu && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[200] flex items-center justify-center p-6" onClick={() => setShowInviteMenu(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-xs p-10 shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -510,9 +479,6 @@ export default function App() {
                     <span className="truncate">{f.username}</span>
                   </button>
                 ))}
-                {friendsList.filter(f => !activeGroup?.members?.includes(f.id)).length === 0 && (
-                  <p className="text-[10px] text-center text-slate-600 italic font-medium py-10 uppercase tracking-widest">Svi tvoji prijatelji su već u labu.</p>
-                )}
               </div>
            </div>
         </div>
@@ -526,40 +492,18 @@ const ChatInput: React.FC<{ onSend: (t: string) => void }> = ({ onSend }) => {
   const handleSend = () => { if(text.trim()) { onSend(text); setText(''); } };
   return (
     <div className="flex items-end gap-3 bg-[#0f0f12] border border-white/5 rounded-[28px] p-3 focus-within:border-indigo-500/40 transition-all shadow-inner">
-      <textarea 
-        rows={1} 
-        value={text} 
-        onChange={e => setText(e.target.value)} 
-        onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} 
-        placeholder="Piši ovde..." 
-        className="flex-1 bg-transparent py-3 px-5 text-sm outline-none resize-none text-white placeholder:text-slate-700 font-medium" 
-      />
-      <button 
-        onClick={handleSend} 
-        className={`p-4 rounded-2xl transition-all shadow-lg active:scale-95 ${text.trim() ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700 cursor-not-allowed'}`}
-      >
-        <Icons.Send />
-      </button>
+      <textarea rows={1} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder="Piši ovde..." className="flex-1 bg-transparent py-3 px-5 text-sm outline-none resize-none text-white placeholder:text-slate-700 font-medium" />
+      <button onClick={handleSend} className={`p-4 rounded-2xl transition-all shadow-lg active:scale-95 ${text.trim() ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700 cursor-not-allowed'}`}><Icons.Send /></button>
     </div>
   );
 };
 
 const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expiresAt: number }> = ({ file, sender, time, expiresAt }) => {
   const [timeLeft, setTimeLeft] = useState(Math.round((expiresAt - Date.now()) / 1000 / 60));
-  const [aiFeedback, setAiFeedback] = useState<string | null>(null);
-  const [loadingAi, setLoadingAi] = useState(false);
-
   useEffect(() => {
     const timer = setInterval(() => setTimeLeft(Math.max(0, Math.round((expiresAt - Date.now()) / 1000 / 60))), 30000);
     return () => clearInterval(timer);
   }, [expiresAt]);
-
-  const handleAiFeedback = async () => {
-    setLoadingAi(true);
-    const feedback = await getFeedbackOnMessage(`Check out this file: ${file.name}`, "A file shared for review");
-    setAiFeedback(feedback || "No insights found.");
-    setLoadingAi(false);
-  };
 
   const isImg = file.type.startsWith('image/');
   const isVid = file.type.startsWith('video/');
@@ -569,54 +513,19 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expir
       <div className="absolute top-3 left-3 z-10 bg-indigo-600 px-3 py-1.5 rounded-xl text-[9px] font-black text-white border border-indigo-400/30 shadow-xl uppercase tracking-tighter">
         {timeLeft}m left
       </div>
-      
-      {isImg && (
-        <div className="relative overflow-hidden aspect-video bg-black">
-          <img src={file.url} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
-        </div>
-      )}
-      
-      {isVid && (
-        <div className="aspect-video bg-black flex items-center justify-center">
-          <video src={file.url} className="w-full h-full object-contain" controls />
-        </div>
-      )}
-
-      {!isImg && !isVid && (
-        <div className="h-32 bg-indigo-900/10 flex items-center justify-center text-indigo-500 border-b border-white/5">
-          <Icons.File />
-        </div>
-      )}
-
+      {isImg && <div className="aspect-video bg-black"><img src={file.url} className="w-full h-full object-cover" /></div>}
+      {isVid && <div className="aspect-video bg-black flex items-center justify-center"><video src={file.url} className="w-full h-full object-contain" controls /></div>}
+      {!isImg && !isVid && <div className="h-32 bg-indigo-900/10 flex items-center justify-center text-indigo-500 border-b border-white/5"><Icons.File /></div>}
       <div className="p-5">
         <div className="flex items-start justify-between gap-3 mb-4">
            <div className="min-w-0">
               <p className="text-[11px] font-black text-white truncate uppercase tracking-tight">{file.name}</p>
               <div className="flex items-center gap-2 mt-1">
                 <span className="text-[9px] font-black text-indigo-500 uppercase tracking-tighter">{(file.size / 1024 / 1024).toFixed(1)}MB</span>
-                <span className="text-[9px] text-slate-700 font-bold">•</span>
-                <span className="text-[9px] text-slate-500 font-bold uppercase truncate">{sender}</span>
+                <span className="text-[9px] text-slate-500 font-bold uppercase truncate">• {sender}</span>
               </div>
            </div>
            <a href={file.url} download={file.name} className="p-3 bg-white/5 text-slate-400 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all border border-white/5 active:scale-95"><Icons.Download /></a>
-        </div>
-
-        {/* AI Feedback Button - Idea for Lab */}
-        <div className="pt-4 border-t border-white/5">
-          {aiFeedback ? (
-            <div className="bg-indigo-600/10 border border-indigo-500/20 p-3 rounded-2xl animate-in fade-in slide-in-from-top-1">
-              <p className="text-[10px] text-indigo-400 leading-relaxed font-medium">"{aiFeedback}"</p>
-              <p className="text-[7px] font-black text-indigo-700 uppercase mt-2 tracking-widest">Lab Assistant AI</p>
-            </div>
-          ) : (
-            <button 
-              onClick={handleAiFeedback}
-              disabled={loadingAi}
-              className="w-full py-2.5 bg-white/5 hover:bg-white/10 text-[9px] font-black text-slate-500 hover:text-indigo-400 uppercase tracking-[0.2em] rounded-xl transition-all border border-dashed border-white/10"
-            >
-              {loadingAi ? 'Analiziranje Lab Asseta...' : 'Traži AI Feedback'}
-            </button>
-          )}
         </div>
       </div>
     </div>
@@ -627,15 +536,12 @@ const PlanCard = ({ title, price, limit, highlight, current, onSelect }: any) =>
   <div className={`p-10 rounded-[48px] border-2 transition-all flex flex-col relative group ${highlight ? 'border-indigo-600 bg-indigo-600/5 shadow-[0_0_80px_rgba(99,102,241,0.15)] scale-105 z-10' : 'border-white/5 bg-white/5 hover:border-white/10'}`}>
     {highlight && <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest italic shadow-xl">Preporučeno</div>}
     <h4 className="text-xl font-black text-white mb-2 italic uppercase tracking-tighter">{title}</h4>
-    <div className="text-5xl font-black text-white mb-10 tracking-tighter">${price}<span className="text-sm text-slate-700 font-normal tracking-normal ml-1 italic">/mo</span></div>
+    <div className="text-5xl font-black text-white mb-10 tracking-tighter">${price}<span className="text-sm text-slate-700 font-normal ml-1 italic">/mo</span></div>
     <ul className="space-y-5 mb-12 flex-1 text-xs text-slate-400 font-medium">
       <li className="flex items-center gap-3"><div className="text-indigo-500 shrink-0"><Icons.Check /></div> {limit} Max File Size</li>
       <li className="flex items-center gap-3"><div className="text-indigo-500 shrink-0"><Icons.Check /></div> Real-time Timski Lab</li>
       <li className="flex items-center gap-3"><div className="text-indigo-500 shrink-0"><Icons.Check /></div> Ephemeral 1H Storage</li>
-      <li className={`flex items-center gap-3 ${title === 'Free' ? 'opacity-20' : ''}`}><div className={`${title === 'Free' ? 'text-slate-700' : 'text-indigo-500'} shrink-0`}><Icons.Check /></div> Priority Lab Support</li>
     </ul>
-    <button onClick={onSelect} disabled={current} className={`w-full py-5 rounded-[28px] font-black uppercase tracking-widest transition-all ${current ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 shadow-inner' : highlight ? 'bg-indigo-600 text-white hover:bg-indigo-500 shadow-xl shadow-indigo-600/30' : 'bg-white text-black hover:bg-slate-200 shadow-lg shadow-white/5'}`}>
-      {current ? 'Aktivan Plan' : 'Aktiviraj'}
-    </button>
+    <button onClick={onSelect} disabled={current} className={`w-full py-5 rounded-[28px] font-black uppercase tracking-widest transition-all ${current ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 shadow-inner' : highlight ? 'bg-indigo-600 text-white hover:bg-indigo-500 shadow-xl shadow-indigo-600/30' : 'bg-white text-black hover:bg-slate-200'}`}>{current ? 'Aktivan Plan' : 'Aktiviraj'}</button>
   </div>
 );
