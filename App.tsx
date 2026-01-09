@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Group, Message, SharedFile, FriendRequest, GroupInvite } from './types';
-import { PLAN_LIMITS, EXPIRY_DURATION, Icons } from './constants';
+import { PLAN_LIMITS, EXPIRY_DURATION, Icons, AVATAR_OPTIONS } from './constants';
 
 const saveToStorage = (key: string, data: any) => localStorage.setItem(key, JSON.stringify(data));
 const getFromStorage = (key: string) => {
@@ -94,6 +94,7 @@ export default function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [viewedUser, setViewedUser] = useState<User | null>(null);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [toast, setToast] = useState<{ m: string; t: 'ok' | 'err' } | null>(null);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
@@ -105,6 +106,11 @@ export default function App() {
   const showToast = (m: string, t: 'ok' | 'err' = 'ok') => {
     setToast({ m, t });
     setTimeout(() => setToast(null), 3000);
+  };
+
+  const isOnline = (u: User | string) => {
+    const target = typeof u === 'string' ? allUsers.find(au => au.id === u) : u;
+    return target?.lastSeen && (Date.now() - target.lastSeen < 12000);
   };
 
   useEffect(() => {
@@ -135,13 +141,22 @@ export default function App() {
         const msgKey = `cl_msgs_${activeGroupId}`;
         const groupMsgs: Message[] = getFromStorage(msgKey) || [];
         const validMsgs = groupMsgs.filter(m => m.expiresAt > Date.now());
-        if (JSON.stringify(validMsgs) !== JSON.stringify(messages)) {
-          setMessages(validMsgs);
+        
+        // Custom rule: Sakrij fajlove čiji je pošiljalac offline
+        const filteredMsgs = validMsgs.filter(m => {
+          if (m.type === 'file') {
+             return isOnline(m.senderId);
+          }
+          return true;
+        });
+
+        if (JSON.stringify(filteredMsgs) !== JSON.stringify(messages)) {
+          setMessages(filteredMsgs);
         }
       }
     }, 1500);
     return () => clearInterval(interval);
-  }, [user, activeGroupId, messages]);
+  }, [user, activeGroupId, messages, allUsers]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -262,7 +277,17 @@ export default function App() {
     }
   };
 
-  const isOnline = (u: User) => u.lastSeen && (Date.now() - u.lastSeen < 10000);
+  const updateAvatar = (seed: string) => {
+    if(!user) return;
+    const users = getFromStorage('cl_users') || [];
+    const meIdx = users.findIndex((u:any) => u.id === user.id);
+    if(meIdx > -1) {
+      users[meIdx].avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${seed}`;
+      saveToStorage('cl_users', users);
+      setUser({...users[meIdx]});
+      showToast("Profilna promenjena!");
+    }
+  };
 
   if (!user) return <AuthPage onAuth={setUser} />;
   const activeGroup = groups.find(g => g.id === activeGroupId);
@@ -281,8 +306,6 @@ export default function App() {
 
       {/* SIDEBAR */}
       <div className="w-[440px] bg-[#0f0f12] border-r border-white/5 flex shrink-0 shadow-2xl z-30">
-        
-        {/* Left: Friends List */}
         <div className="w-1/2 border-r border-white/5 flex flex-col h-full bg-[#0d0d0f]">
           <div className="p-5 border-b border-white/5 flex items-center justify-between">
             <span className="font-black text-[10px] uppercase tracking-widest text-indigo-400">Prijatelji</span>
@@ -301,7 +324,7 @@ export default function App() {
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {friendsList.map(f => (
-              <div key={f.id} className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-all group">
+              <div key={f.id} className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-all group cursor-pointer" onClick={() => setViewedUser(f)}>
                 <div className="relative">
                   <img src={f.avatar} className="w-9 h-9 rounded-lg border border-white/10 bg-black" />
                   {isOnline(f) && <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#0d0d0f]"></div>}
@@ -315,7 +338,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right: Groups List */}
         <div className="w-1/2 flex flex-col h-full bg-[#0a0a0c]">
           <div className="p-5 border-b border-white/5 flex items-center justify-between">
             <span className="font-black text-[10px] uppercase tracking-widest text-emerald-400">Lab Sobe</span>
@@ -329,11 +351,9 @@ export default function App() {
               </button>
             ))}
           </div>
-          
-          {/* User Footer */}
           <div className="p-4 border-t border-white/5 bg-black/40">
              <div className="flex items-center gap-3">
-               <button onClick={() => setShowProfile(true)} className="relative group">
+               <button onClick={() => setShowProfile(true)} className="relative group shrink-0">
                  <img src={user.avatar} className="w-10 h-10 rounded-xl border border-white/10 group-hover:border-indigo-500 transition-all" />
                  <div className="absolute inset-0 bg-indigo-600/20 opacity-0 group-hover:opacity-100 rounded-xl transition-all flex items-center justify-center text-[10px] font-black">EDIT</div>
                </button>
@@ -341,13 +361,13 @@ export default function App() {
                   <p className="text-[10px] font-black text-white truncate italic uppercase">{user.username}</p>
                   <p className="text-[8px] font-black text-indigo-500 uppercase tracking-widest">{user.plan} lab</p>
                </div>
-               <button onClick={() => setUser(null)} className="text-slate-600 hover:text-rose-500 p-2"><Icons.LogOut /></button>
+               <button onClick={() => setUser(null)} className="text-slate-600 hover:text-rose-500 p-2 shrink-0"><Icons.LogOut /></button>
              </div>
           </div>
         </div>
       </div>
 
-      {/* MAIN CONTENT */}
+      {/* MAIN WORKSPACE */}
       <div className="flex-1 flex flex-col bg-[#050505]">
         {!activeGroup ? (
           <div className="flex-1 flex flex-col items-center justify-center opacity-20">
@@ -367,7 +387,7 @@ export default function App() {
                   <div className="h-8 w-[1px] bg-white/10 mx-2"></div>
                   <div className="flex -space-x-2">
                     {activeMembers.slice(0, 5).map(m => (
-                      <img key={m.id} src={m.avatar} className="w-8 h-8 rounded-lg border-2 border-[#050505] bg-black" />
+                      <img key={m.id} src={m.avatar} onClick={() => setViewedUser(m)} className="w-8 h-8 rounded-lg border-2 border-[#050505] bg-black cursor-pointer hover:scale-110 transition-transform" />
                     ))}
                   </div>
                   <button onClick={() => setShowAbout(true)} className="text-[9px] bg-white/5 px-4 py-2 rounded-lg uppercase font-black tracking-widest hover:bg-indigo-600 transition-all">Members & Tools</button>
@@ -380,12 +400,11 @@ export default function App() {
             </div>
 
             <div className="flex-1 flex overflow-hidden">
-              {/* CHAT */}
               <div className="flex-1 flex flex-col border-r border-white/5">
                 <div className="flex-1 overflow-y-auto p-8 space-y-6">
                   {messages.filter(m => m.type === 'text').map(msg => (
                     <div key={msg.id} className={`flex gap-4 ${msg.senderId === user.id ? 'flex-row-reverse' : ''}`}>
-                      <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-9 h-9 rounded-lg bg-black shrink-0 border border-white/10" />
+                      <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} onClick={() => setViewedUser(allUsers.find(au => au.id === msg.senderId) || null)} className="w-9 h-9 rounded-lg bg-black shrink-0 border border-white/10 cursor-pointer hover:scale-105 transition-transform" />
                       <div className={`flex flex-col max-w-[70%] ${msg.senderId === user.id ? 'items-end' : ''}`}>
                         <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5 px-1">{msg.senderName}</span>
                         <div className={`p-4 rounded-2xl text-sm leading-relaxed ${msg.senderId === user.id ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-[#121216] border border-white/5 text-slate-200 rounded-tl-none'}`}>
@@ -401,7 +420,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ASSET LAB */}
               <div className="w-[360px] bg-[#0a0a0c] flex flex-col">
                 <div className="p-6 border-b border-white/5 flex items-center justify-between shrink-0">
                   <div>
@@ -415,6 +433,12 @@ export default function App() {
                   {messages.filter(m => m.type === 'file').map(msg => (
                     <FileItem key={msg.id} file={msg.file!} sender={msg.senderName} time={msg.timestamp} expiresAt={msg.expiresAt} onPreview={() => setSelectedFile(msg.file!)} />
                   ))}
+                  {messages.filter(m => m.type === 'file').length === 0 && (
+                    <div className="h-full flex flex-col items-center justify-center opacity-10">
+                       <Icons.File />
+                       <p className="text-[10px] uppercase font-black tracking-widest mt-4">Nema fajlova</p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -422,9 +446,120 @@ export default function App() {
         )}
       </div>
 
-      {/* MODALS SECTION */}
+      {/* MODALS */}
 
-      {/* INBOX MODAL */}
+      {/* PROFILE VIEW (CLICK ON AVATAR) */}
+      {viewedUser && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[1000] flex items-center justify-center p-6" onClick={() => setViewedUser(null)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-2xl w-full max-w-sm p-10 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="text-center mb-8">
+                <img src={viewedUser.avatar} className="w-24 h-24 rounded-2xl mx-auto border-4 border-white/5 mb-4 shadow-2xl bg-black" />
+                <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">{viewedUser.username}</h3>
+                <span className={`text-[10px] font-black uppercase tracking-widest ${isOnline(viewedUser) ? 'text-emerald-500' : 'text-slate-500'}`}>{isOnline(viewedUser) ? 'Online' : 'Offline'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-4 mb-8">
+                  <div className="bg-white/5 p-4 rounded-xl text-center">
+                    <p className="text-lg font-black text-white">{viewedUser.friends?.length || 0}</p>
+                    <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Prijatelja</p>
+                  </div>
+                  <div className="bg-white/5 p-4 rounded-xl text-center">
+                    <p className="text-[8px] font-black text-indigo-500 uppercase tracking-widest">{viewedUser.plan} account</p>
+                  </div>
+              </div>
+              
+              {activeGroup?.ownerId === user.id && viewedUser.id !== user.id && (
+                <div className="pt-6 border-t border-white/5 grid grid-cols-2 gap-3">
+                  <button onClick={() => { handleMuteMember(viewedUser.id); setViewedUser(null); }} className={`flex items-center justify-center gap-2 py-3 rounded-xl font-black uppercase text-[10px] transition-all ${activeGroup.mutedMembers?.includes(viewedUser.id) ? 'bg-amber-600 text-white' : 'bg-white/5 text-amber-500 hover:bg-amber-500 hover:text-white'}`}>
+                    <Icons.X /> Mute
+                  </button>
+                  <button onClick={() => { handleKickMember(viewedUser.id); setViewedUser(null); }} className="flex items-center justify-center gap-2 py-3 bg-white/5 text-rose-500 hover:bg-rose-500 hover:text-white rounded-xl font-black uppercase text-[10px] transition-all">
+                    <Icons.Hammer /> Kick
+                  </button>
+                </div>
+              )}
+              <button onClick={() => setViewedUser(null)} className="w-full mt-6 py-3 bg-white/5 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-white/10">Zatvori</button>
+           </div>
+        </div>
+      )}
+
+      {/* MY PROFILE (TAB) */}
+      {showProfile && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-6" onClick={() => setShowProfile(false)}>
+           <div className="bg-[#0f0f12] border border-indigo-500/30 rounded-2xl w-full max-w-sm p-10 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="absolute top-0 left-0 w-full h-1 bg-indigo-600"></div>
+              <div className="text-center mb-10">
+                <img src={user.avatar} className="w-24 h-24 rounded-2xl mx-auto border-4 border-white/5 mb-6 shadow-2xl bg-black" />
+                <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">My Profile</h3>
+              </div>
+              <div className="space-y-6">
+                <div>
+                   <label className="text-[10px] font-black text-slate-600 uppercase tracking-widest block mb-4 px-1">Izaberi karakter:</label>
+                   <div className="flex justify-between gap-2">
+                     {AVATAR_OPTIONS.map(opt => (
+                       <button key={opt.seed} onClick={() => updateAvatar(opt.seed)} className={`w-12 h-12 rounded-xl border-2 overflow-hidden transition-all ${user.avatar.includes(opt.seed) ? 'border-indigo-500 scale-110 shadow-lg' : 'border-transparent hover:border-white/20'}`}>
+                          <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${opt.seed}`} className="w-full h-full bg-black" />
+                       </button>
+                     ))}
+                   </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-white/5 p-4 rounded-xl text-center border border-white/5">
+                    <p className="text-lg font-black text-white">{user.friends.length}</p>
+                    <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Prijatelja</p>
+                  </div>
+                  <div className="bg-white/5 p-4 rounded-xl text-center border border-white/5">
+                    <p className="text-lg font-black text-white">{groups.length}</p>
+                    <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Lab Soba</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowPlans(true)} className="w-full py-4 bg-white text-black rounded-xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all">Plan: {user.plan}</button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* ABOUT MODAL (MEMBERS LIST) */}
+      {showAbout && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-2xl w-full max-w-sm p-10 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-10">
+                 <h3 className="font-black italic text-xl uppercase tracking-tighter text-white">Lab Members</h3>
+                 <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
+              </div>
+              <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                {activeMembers.map(m => (
+                  <div key={m.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-white/5 transition-all group border border-transparent hover:border-white/5 cursor-pointer" onClick={() => setViewedUser(m)}>
+                     <div className="flex items-center gap-3">
+                        <img src={m.avatar} className="w-10 h-10 rounded-lg border border-white/10 bg-black" />
+                        <div className="flex flex-col">
+                           <span className="text-[12px] font-black text-slate-200">{m.username} {m.id === activeGroup?.ownerId && '👑'}</span>
+                           <span className={`text-[8px] font-black uppercase tracking-widest ${isOnline(m) ? 'text-emerald-500' : 'text-slate-700'}`}>{isOnline(m) ? 'Online' : 'Offline'}</span>
+                        </div>
+                     </div>
+                     <div className="flex items-center gap-2">
+                        {activeGroup?.mutedMembers?.includes(m.id) && <div className="text-amber-500"><Icons.VolumeX /></div>}
+                        <div className={`w-2 h-2 rounded-full ${isOnline(m) ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-slate-800'}`}></div>
+                     </div>
+                  </div>
+                ))}
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* OTHER MODALS: CREATE GROUP, INBOX, FILE PREVIEW, PLANS */}
+      {showCreateGroup && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[500] flex items-center justify-center p-6" onClick={() => setShowCreateGroup(false)}>
+          <div className="bg-[#0f0f12] border border-white/10 p-10 rounded-2xl w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+             <h3 className="text-xl font-black text-white italic uppercase tracking-tighter mb-8 text-center">Nova Soba</h3>
+             <div className="space-y-4">
+               <input type="text" placeholder="Ime grupe..." className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-emerald-500 outline-none text-white font-bold" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreateGroup()} />
+               <button onClick={handleCreateGroup} className="w-full py-4 bg-emerald-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-emerald-500 shadow-xl shadow-emerald-600/20 active:scale-95 transition-all">Create Workspace</button>
+             </div>
+          </div>
+        </div>
+      )}
+
       {showInbox && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6" onClick={() => setShowInbox(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-2xl w-full max-w-sm p-8 shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -457,101 +592,9 @@ export default function App() {
         </div>
       )}
 
-      {/* PROFILE MODAL */}
-      {showProfile && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-6" onClick={() => setShowProfile(false)}>
-           <div className="bg-[#0f0f12] border border-indigo-500/30 rounded-2xl w-full max-w-sm p-10 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-emerald-500 to-rose-500"></div>
-              <div className="text-center mb-8">
-                <img src={user.avatar} className="w-24 h-24 rounded-2xl mx-auto border-4 border-white/5 mb-4 shadow-2xl bg-black" />
-                <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">{user.username}</h3>
-                <span className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.4em]">{user.plan} account</span>
-              </div>
-              <div className="space-y-6">
-                <div>
-                   <label className="text-[10px] font-black text-slate-600 uppercase tracking-widest block mb-2 px-1">Avatar Seed</label>
-                   <div className="flex gap-2">
-                     <input type="text" className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm outline-none focus:border-indigo-500 text-white" defaultValue={user.username} 
-                       onChange={(e) => {
-                         const users = getFromStorage('cl_users') || [];
-                         const me = users.find((u:any) => u.id === user.id);
-                         if(me) {
-                            me.avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${e.target.value}`;
-                            saveToStorage('cl_users', users);
-                            setUser({...me});
-                         }
-                       }} 
-                     />
-                   </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-white/5 p-4 rounded-xl text-center">
-                    <p className="text-lg font-black text-white">{user.friends.length}</p>
-                    <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Prijatelja</p>
-                  </div>
-                  <div className="bg-white/5 p-4 rounded-xl text-center">
-                    <p className="text-lg font-black text-white">{groups.length}</p>
-                    <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Lab Grupa</p>
-                  </div>
-                </div>
-                <button onClick={() => setShowPlans(true)} className="w-full py-4 bg-white text-black rounded-xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all">Upgrade Plan</button>
-              </div>
-           </div>
-        </div>
-      )}
-
-      {/* ABOUT MODAL (OWNER TOOLS) */}
-      {showAbout && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 rounded-2xl w-full max-w-sm p-10 shadow-2xl" onClick={e => e.stopPropagation()}>
-              <div className="flex justify-between items-center mb-10">
-                 <h3 className="font-black italic text-xl uppercase tracking-tighter text-white">Lab Members</h3>
-                 <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
-              </div>
-              <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
-                {activeMembers.map(m => (
-                  <div key={m.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10 transition-all group">
-                     <div className="flex items-center gap-3">
-                        <img src={m.avatar} className="w-10 h-10 rounded-lg border border-white/10 bg-black" />
-                        <div className="flex flex-col">
-                           <span className="text-[12px] font-black text-slate-200">{m.username} {m.id === activeGroup?.ownerId && '👑'}</span>
-                           <span className={`text-[8px] font-black uppercase tracking-widest ${isOnline(m) ? 'text-emerald-500' : 'text-slate-700'}`}>{isOnline(m) ? 'Active' : 'Away'}</span>
-                        </div>
-                     </div>
-                     {activeGroup?.ownerId === user.id && m.id !== user.id && (
-                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                         <button onClick={() => handleMuteMember(m.id)} className={`p-2 rounded-lg transition-all ${activeGroup?.mutedMembers?.includes(m.id) ? 'bg-amber-600 text-white' : 'bg-white/5 text-amber-500 hover:bg-amber-500 hover:text-white'}`} title="Mute/Unmute">
-                           M
-                         </button>
-                         <button onClick={() => handleKickMember(m.id)} className="p-2 bg-white/5 text-rose-500 hover:bg-rose-500 hover:text-white rounded-lg transition-all" title="Kick">
-                           K
-                         </button>
-                       </div>
-                     )}
-                  </div>
-                ))}
-              </div>
-           </div>
-        </div>
-      )}
-
-      {/* CREATE GROUP MODAL */}
-      {showCreateGroup && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[500] flex items-center justify-center p-6" onClick={() => setShowCreateGroup(false)}>
-          <div className="bg-[#0f0f12] border border-white/10 p-10 rounded-2xl w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
-             <h3 className="text-xl font-black text-white italic uppercase tracking-tighter mb-8">Nova Soba</h3>
-             <div className="space-y-4">
-               <input type="text" placeholder="Ime grupe..." className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-emerald-500 outline-none text-white font-bold" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreateGroup()} />
-               <button onClick={handleCreateGroup} className="w-full py-4 bg-emerald-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-emerald-500 shadow-xl shadow-emerald-600/20 active:scale-95 transition-all">Create Workspace</button>
-             </div>
-          </div>
-        </div>
-      )}
-
-      {/* FILE PREVIEW MODAL */}
       {selectedFile && (
         <div className="fixed inset-0 bg-black/95 z-[1000] flex flex-col items-center justify-center p-10" onClick={() => setSelectedFile(null)}>
-           <button onClick={() => setSelectedFile(null)} className="absolute top-10 right-10 p-4 bg-white/5 text-white rounded-full hover:bg-rose-600 transition-all"><Icons.X /></button>
+           <button onClick={() => setSelectedFile(null)} className="absolute top-10 right-10 p-4 bg-white/5 text-white rounded-full hover:bg-rose-600 transition-all z-50"><Icons.X /></button>
            <div className="max-w-4xl w-full max-h-[80vh] flex items-center justify-center rounded-2xl overflow-hidden shadow-2xl border border-white/10" onClick={e => e.stopPropagation()}>
               {selectedFile.type.startsWith('image/') && <img src={selectedFile.url} className="max-w-full max-h-full object-contain" />}
               {selectedFile.type.startsWith('video/') && <video src={selectedFile.url} className="max-w-full max-h-full" controls autoPlay />}
@@ -576,7 +619,6 @@ export default function App() {
         </div>
       )}
 
-      {/* PLANS MODAL */}
       {showPlans && (
         <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[600] flex items-center justify-center p-6" onClick={() => setShowPlans(false)}>
           <div className="bg-[#0f0f12] border border-white/5 rounded-3xl w-full max-w-4xl p-16 shadow-2xl relative" onClick={e => e.stopPropagation()}>
@@ -601,7 +643,7 @@ const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean }> =
   const handleSend = () => { if(text.trim() && !disabled) { onSend(text); setText(''); } };
   return (
     <div className={`flex items-end gap-3 bg-[#0f0f12] border border-white/10 rounded-2xl p-3 focus-within:border-indigo-500/50 transition-all ${disabled ? 'opacity-50 grayscale' : ''}`}>
-      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "Mutiran si u ovoj sobi..." : "Pošalji poruku tvojim saradnicima..."} className="flex-1 bg-transparent py-3 px-4 text-sm outline-none resize-none text-white placeholder:text-slate-700 font-medium" />
+      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "Mutiran si u ovoj sobi..." : "Pošalji poruku..."} className="flex-1 bg-transparent py-3 px-4 text-sm outline-none resize-none text-white placeholder:text-slate-700 font-medium" />
       <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-4 rounded-xl transition-all shadow-lg active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700 cursor-not-allowed'}`}><Icons.Send /></button>
     </div>
   );
@@ -623,8 +665,6 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expir
       <div className="absolute top-3 right-3 z-10 bg-indigo-600/90 backdrop-blur-md px-3 py-1.5 rounded-lg text-[8px] font-black text-white uppercase tracking-widest border border-indigo-400/20">
         {timeLeft}m left
       </div>
-      
-      {/* Visual Preview in card */}
       <div className="cursor-pointer overflow-hidden aspect-video bg-black flex items-center justify-center relative" onClick={onPreview}>
          {isImg && <img src={file.url} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />}
          {isVid && <video src={file.url} className="w-full h-full object-contain pointer-events-none" />}
@@ -634,9 +674,8 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expir
             <span className="text-[10px] font-black text-white uppercase tracking-[0.3em] bg-black/60 px-4 py-2 rounded-full border border-white/10 shadow-2xl">Preview Asset</span>
          </div>
       </div>
-
       <div className="p-4">
-        <div className="flex items-start justify-between gap-3 mb-1">
+        <div className="flex items-start justify-between gap-3">
            <div className="min-w-0">
               <p className="text-[11px] font-black text-white truncate uppercase tracking-tighter">{file.name}</p>
               <div className="flex items-center gap-2 mt-1">
