@@ -1,8 +1,6 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Group, Message, SharedFile, FriendRequest } from './types';
 import { PLAN_LIMITS, EXPIRY_DURATION, Icons } from './constants';
-import { getFeedbackOnMessage } from './services/gemini';
 
 // Mock storage helpers
 const saveToStorage = (key: string, data: any) => localStorage.setItem(key, JSON.stringify(data));
@@ -122,7 +120,7 @@ export default function App() {
       setMessages(prev => {
         const next = { ...prev };
         Object.keys(next).forEach(gid => {
-          next[gid] = next[gid].filter(m => m.expiresAt > now);
+          next[gid] = (next[gid] || []).filter(m => m.expiresAt > now);
         });
         return next;
       });
@@ -202,14 +200,14 @@ export default function App() {
   };
 
   const inviteToGroup = (friendId: string) => {
-    if (!activeGroupId) return;
+    if (!activeGroupId || !user) return;
     const allGroups: Group[] = getFromStorage('cl_groups') || [];
     const gIdx = allGroups.findIndex(g => g.id === activeGroupId);
     if (gIdx > -1) {
       if (allGroups[gIdx].members.includes(friendId)) return;
       allGroups[gIdx].members.push(friendId);
       saveToStorage('cl_groups', allGroups);
-      setGroups(allGroups.filter(g => g.members.includes(user!.id)));
+      setGroups(allGroups.filter(g => g.members.includes(user.id)));
     }
   };
 
@@ -236,23 +234,6 @@ export default function App() {
       expiresAt: Date.now() + EXPIRY_DURATION
     };
     setMessages(prev => ({ ...prev, [activeGroupId]: [...(prev[activeGroupId] || []), newMessage] }));
-    
-    if (text.length > 5 && !file) {
-      const feedback = await getFeedbackOnMessage(text);
-      if (feedback) {
-        const aiMsg: Message = {
-          id: 'ai-' + Date.now(),
-          groupId: activeGroupId,
-          senderId: 'ai-bot',
-          senderName: 'Assistant',
-          text: feedback,
-          type: 'text',
-          timestamp: Date.now(),
-          expiresAt: Date.now() + EXPIRY_DURATION
-        };
-        setTimeout(() => setMessages(p => ({ ...p, [activeGroupId]: [...(p[activeGroupId] || []), aiMsg] })), 800);
-      }
-    }
   };
 
   if (!user) return <AuthPage onAuth={setUser} />;
@@ -409,7 +390,7 @@ export default function App() {
                       <span className="text-[11px] font-bold text-slate-400">{msg.senderName}</span>
                       <span className="text-[10px] text-slate-600">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
-                    <div className={`p-4 rounded-[22px] ${msg.senderId === user.id ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg shadow-indigo-600/10' : msg.senderId === 'ai-bot' ? 'bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 italic' : 'bg-[#16161a] border border-white/5 text-slate-200 rounded-tl-none'}`}>
+                    <div className={`p-4 rounded-[22px] ${msg.senderId === user.id ? 'bg-indigo-600 text-white rounded-tr-none shadow-lg shadow-indigo-600/10' : 'bg-[#16161a] border border-white/5 text-slate-200 rounded-tl-none'}`}>
                       {msg.type === 'file' ? <FileItem file={msg.file!} /> : <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</p>}
                     </div>
                   </div>
