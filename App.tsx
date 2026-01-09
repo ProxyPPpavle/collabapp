@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Group, Message, SharedFile, FriendRequest, GroupInvite } from './types';
 import { PLAN_LIMITS, EXPIRY_DURATION, Icons } from './constants';
+import { getFeedbackOnMessage } from './services/gemini';
 
 const saveToStorage = (key: string, data: any) => localStorage.setItem(key, JSON.stringify(data));
 const getFromStorage = (key: string) => {
@@ -94,15 +95,14 @@ export default function App() {
   const [groupInvites, setGroupInvites] = useState<GroupInvite[]>([]);
   const [showInviteMenu, setShowInviteMenu] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
+  const [showInbox, setShowInbox] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Sync Interval
   useEffect(() => {
     if (!user) return;
     const interval = setInterval(() => {
-      // 1. Update my lastSeen
       const users: User[] = getFromStorage('cl_users') || [];
       const meIdx = users.findIndex(u => u.id === user.id);
       if (meIdx > -1) {
@@ -111,17 +111,15 @@ export default function App() {
         setAllUsers(users);
       }
 
-      // 2. Sync Requests & Invites
       const reqs: FriendRequest[] = getFromStorage('cl_reqs') || [];
       setFriendRequests(reqs.filter(r => r.toId === user.id));
+      
       const invites: GroupInvite[] = getFromStorage('cl_group_invites') || [];
       setGroupInvites(invites.filter(i => i.toId === user.id));
 
-      // 3. Sync Groups
       const allGroups: Group[] = getFromStorage('cl_groups') || [];
       setGroups(allGroups.filter(g => g.members.includes(user.id)));
 
-      // 4. Sync Messages for active group
       if (activeGroupId) {
         const msgKey = `cl_msgs_${activeGroupId}`;
         const groupMsgs: Message[] = getFromStorage(msgKey) || [];
@@ -129,7 +127,6 @@ export default function App() {
         const validMsgs = groupMsgs.filter(m => m.expiresAt > now);
         if (JSON.stringify(validMsgs) !== JSON.stringify(messages)) {
           setMessages(validMsgs);
-          if (groupMsgs.length !== validMsgs.length) saveToStorage(msgKey, validMsgs);
         }
       }
     }, 1500);
@@ -209,159 +206,140 @@ export default function App() {
   if (!user) return <AuthPage onAuth={setUser} />;
   const activeGroup = groups.find(g => g.id === activeGroupId);
   const friendsList = allUsers.filter(u => user.friends.includes(u.id));
-  const activeMembers = allUsers.filter(u => activeGroup?.members.includes(u.id));
+  const activeMembers = allUsers.filter(u => activeGroup?.members?.includes(u.id) ?? false);
 
   return (
-    <div className="flex h-screen bg-[#050505] text-slate-300">
-      {/* SIDEBAR */}
-      <div className="w-80 bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0">
-        <div className="p-6 border-b border-white/5 flex items-center gap-3">
-          <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold italic">C</div>
-          <span className="font-bold text-lg text-white italic">Collab Lab</span>
+    <div className="flex h-screen bg-[#050505] text-slate-300 overflow-hidden">
+      
+      {/* SIDEBAR - DUAL COLUMN (FRIENDS | GROUPS) */}
+      <div className="w-[480px] bg-[#0f0f12] border-r border-white/5 flex shrink-0 shadow-2xl z-30">
+        
+        {/* Left Column: Friends (Full Height, 50% Sidebar Width) */}
+        <div className="w-1/2 border-r border-white/5 flex flex-col h-full">
+          <div className="p-5 border-b border-white/5 flex items-center gap-2 shrink-0">
+            <div className="text-indigo-500"><Icons.Users /></div>
+            <span className="font-bold text-[10px] uppercase tracking-[0.2em] text-indigo-400">Prijatelji</span>
+          </div>
+          <div className="p-4 border-b border-white/5 shrink-0">
+            <div className="flex gap-2">
+              <input type="text" placeholder="Traži..." className="flex-1 bg-white/5 border border-white/5 rounded-xl px-3 py-2 text-[10px] outline-none focus:border-indigo-500 transition-all" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+              <button onClick={handleSendFriendRequest} className="p-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-500 transition-all active:scale-95"><Icons.UserPlus /></button>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-1">
+            {friendsList.map(f => (
+              <div key={f.id} className="flex items-center gap-3 p-3 rounded-2xl hover:bg-white/5 transition-all group cursor-pointer border border-transparent hover:border-white/5">
+                <div className="relative">
+                  <img src={f.avatar} className="w-9 h-9 rounded-2xl border border-white/10 bg-slate-900 object-cover" />
+                  {isOnline(f) && (
+                    <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#0f0f12] shadow-[0_0_8px_rgba(16,185,129,0.4)]"></div>
+                  )}
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-[12px] font-bold text-slate-200 truncate">{f.username}</span>
+                  <span className="text-[9px] text-slate-500 font-medium tracking-wide uppercase">{isOnline(f) ? 'Online' : 'Vidjen skoro'}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-8">
-          {/* Inbox Section */}
-          {(friendRequests.length > 0 || groupInvites.length > 0) && (
-            <div>
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest px-2 mb-3 block">Inbox Obaveštenja</span>
-              {friendRequests.map(req => (
-                <div key={req.id} className="flex items-center justify-between bg-white/5 p-3 rounded-xl mb-2 border border-indigo-500/20">
-                   <div className="flex flex-col text-xs">
-                     <span className="font-bold text-white">{req.fromUsername}</span>
-                     <span className="text-slate-500 text-[10px]">Friend request</span>
-                   </div>
-                   <div className="flex gap-1">
-                     <button onClick={() => handleAcceptRequest(req)} className="p-1.5 bg-indigo-600 rounded-lg"><Icons.Check /></button>
-                     <button onClick={() => {
-                        const all = getFromStorage('cl_reqs') || [];
-                        saveToStorage('cl_reqs', all.filter((r:any) => r.id !== req.id));
-                     }} className="p-1.5 bg-white/5 rounded-lg text-slate-500"><Icons.X /></button>
-                   </div>
-                </div>
-              ))}
-              {groupInvites.map(inv => (
-                <div key={inv.id} className="flex items-center justify-between bg-emerald-500/5 p-3 rounded-xl mb-2 border border-emerald-500/20">
-                   <div className="flex flex-col text-xs">
-                     <span className="font-bold text-emerald-400">{inv.groupName}</span>
-                     <span className="text-slate-500 text-[10px]">Invited by {inv.fromUsername}</span>
-                   </div>
-                   <div className="flex gap-1">
-                     <button onClick={() => handleAcceptInvite(inv)} className="p-1.5 bg-emerald-600 rounded-lg text-white"><Icons.Check /></button>
-                   </div>
-                </div>
-              ))}
+        {/* Right Column: Groups (Full Height, 50% Sidebar Width) */}
+        <div className="w-1/2 flex flex-col h-full bg-[#0a0a0c]">
+          <div className="p-5 border-b border-white/5 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <div className="text-emerald-500"><Icons.Video /></div>
+              <span className="font-bold text-[10px] uppercase tracking-[0.2em] text-emerald-400">Lab Sobe</span>
             </div>
-          )}
-
-          {/* Sobe Section */}
-          <div>
-            <div className="flex items-center justify-between px-2 mb-4">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Moje Sobe</span>
-              <button onClick={() => {
-                 const name = prompt("Ime grupe:");
-                 if(name) {
-                    const newG = { id: Math.random().toString(36).substring(2,9), name, ownerId: user.id, members: [user.id], createdAt: Date.now() };
-                    const all = getFromStorage('cl_groups') || [];
-                    saveToStorage('cl_groups', [...all, newG]);
-                 }
-              }} className="p-1 text-indigo-400"><Icons.Plus /></button>
-            </div>
-            {groups.map(g => (
-              <button key={g.id} onClick={() => setActiveGroupId(g.id)} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl mb-1 transition-all ${activeGroupId === g.id ? 'bg-indigo-600/10 text-indigo-400 border border-indigo-500/20 shadow-xl' : 'hover:bg-white/5 border border-transparent'}`}>
+            <button onClick={() => {
+              const name = prompt("Ime nove grupe:");
+              if(name) {
+                const newG = { id: Math.random().toString(36).substring(2,9), name, ownerId: user.id, members: [user.id], createdAt: Date.now() };
+                const all = getFromStorage('cl_groups') || [];
+                saveToStorage('cl_groups', [...all, newG]);
+              }
+            }} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-xl hover:bg-emerald-500 hover:text-white transition-all"><Icons.Plus /></button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {groups.sort((a,b) => a.name === 'My Space' ? -1 : 1).map(g => (
+              <button key={g.id} onClick={() => setActiveGroupId(g.id)} className={`w-full flex items-center gap-3 p-4 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/20 shadow-xl' : 'hover:bg-white/5 border-transparent'}`}>
                 <div className={`w-2 h-2 rounded-full ${g.name === 'My Space' ? 'bg-indigo-400' : 'bg-slate-700'}`}></div>
-                <span className="text-sm font-medium truncate">{g.name}</span>
+                <span className="text-xs font-bold truncate uppercase tracking-widest">{g.name}</span>
               </button>
             ))}
           </div>
-
-          {/* Prijatelji Section */}
-          <div>
-            <div className="px-2 mb-4">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-3">Prijatelji</span>
-              <div className="flex gap-2">
-                <input type="text" placeholder="Dodaj po username..." className="flex-1 bg-[#16161a] border border-white/5 rounded-xl px-3 py-2 text-[11px] outline-none" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
-                <button onClick={handleSendFriendRequest} className="p-2 bg-indigo-600 text-white rounded-xl"><Icons.UserPlus /></button>
-              </div>
-            </div>
-            {friendsList.map(f => (
-              <div key={f.id} className="flex items-center gap-3 px-3 py-2 rounded-xl">
-                <div className="relative">
-                  <img src={f.avatar} className="w-8 h-8 rounded-full border border-white/5" alt="" />
-                  {isOnline(f) && <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-[#0f0f12]"></div>}
-                </div>
-                <span className="text-xs font-medium text-slate-300">{f.username}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="p-6 border-t border-white/5 bg-[#0a0a0c]">
-          <div className="flex items-center gap-3">
-            <img src={user.avatar} className="w-10 h-10 rounded-full" alt="" />
-            <div className="flex-1 min-w-0">
-              <p className="font-bold text-sm text-white truncate">{user.username}</p>
-              <button onClick={() => setShowPlans(true)} className="text-[10px] text-indigo-500 font-bold uppercase">{user.plan} plan</button>
-            </div>
-            <button onClick={() => setUser(null)} className="text-slate-600 hover:text-red-500"><Icons.LogOut /></button>
+          
+          {/* User Profile Footer */}
+          <div className="p-5 border-t border-white/5 bg-black/40 shrink-0">
+             <div className="flex items-center gap-3">
+               <img src={user.avatar} className="w-10 h-10 rounded-2xl border border-white/5" />
+               <div className="flex-1 min-w-0">
+                  <p className="text-[11px] font-black text-white truncate italic uppercase tracking-tighter">{user.username}</p>
+                  <button onClick={() => setShowPlans(true)} className="text-[9px] uppercase font-black text-indigo-500 hover:text-indigo-400 flex items-center gap-1 transition-colors">
+                    <div className="w-1 h-1 bg-indigo-500 rounded-full animate-pulse"></div>
+                    {user.plan} LAB PLAN
+                  </button>
+               </div>
+               <button onClick={() => setUser(null)} className="text-slate-600 hover:text-red-500 p-2 transition-colors"><Icons.LogOut /></button>
+             </div>
           </div>
         </div>
       </div>
 
       {/* MAIN WORKSPACE */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0 bg-[#050505]">
         {!activeGroup ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center p-12 opacity-50">
-             <div className="w-20 h-20 bg-indigo-600/10 text-indigo-500 rounded-[32px] flex items-center justify-center mb-6 border border-indigo-500/10"><Icons.Users /></div>
-             <h2 className="text-2xl font-bold text-white mb-2 italic">Dobrodošao u Collab Lab</h2>
-             <p className="text-sm max-w-xs text-slate-500">Izaberi sobu iz sidebara da započneš transfer i dopisivanje.</p>
+          <div className="flex-1 flex flex-col items-center justify-center text-center p-10 opacity-30 select-none">
+             <div className="w-24 h-24 bg-indigo-600/10 text-indigo-500 rounded-[40px] flex items-center justify-center mb-8 border border-indigo-500/10 animate-pulse">
+               <Icons.Sparkles />
+             </div>
+             <h2 className="text-2xl font-black italic text-white uppercase tracking-tighter mb-2">Workspace Inaktivni</h2>
+             <p className="text-xs max-w-xs text-slate-500 leading-relaxed font-medium uppercase tracking-widest">Odaberi ili napravi lab sobu da započneš transfer fajlova i komunikaciju u realnom vremenu.</p>
           </div>
         ) : (
           <>
-            <div className="h-20 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505]/80 backdrop-blur-xl z-20 shrink-0">
-               <div className="flex items-center gap-4">
-                  <h2 className="font-bold text-lg text-white italic">{activeGroup.name}</h2>
-                  <div className="h-4 w-[1px] bg-white/10"></div>
-                  <button onClick={() => setShowAbout(true)} className="text-[10px] text-slate-500 font-bold uppercase hover:text-indigo-400 transition-colors">O grupi</button>
+            <div className="h-20 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505] z-20 shrink-0">
+               <div className="flex items-center gap-6 min-w-0">
+                  <div className="flex flex-col">
+                    <h2 className="font-black text-lg text-white italic truncate uppercase tracking-tighter">{activeGroup.name}</h2>
+                    <span className="text-[8px] font-bold text-indigo-500 tracking-[0.3em] uppercase">Active Session</span>
+                  </div>
+                  <div className="h-6 w-[1px] bg-white/10 mx-2"></div>
+                  <div className="flex -space-x-2 overflow-hidden">
+                    {activeMembers.slice(0, 4).map(m => (
+                      <img key={m.id} src={m.avatar} className="w-7 h-7 rounded-xl border-2 border-[#050505] bg-slate-900" title={m.username} />
+                    ))}
+                    {activeMembers.length > 4 && <div className="w-7 h-7 rounded-xl bg-indigo-900 flex items-center justify-center text-[9px] font-black border-2 border-[#050505] text-white">+{activeMembers.length-4}</div>}
+                  </div>
+                  <button onClick={() => setShowAbout(true)} className="text-[9px] bg-white/5 px-3 py-1.5 rounded-xl uppercase font-black tracking-widest hover:bg-white/10 border border-white/5 transition-all active:scale-95">About</button>
                </div>
                
                <div className="flex items-center gap-4">
+                  <button onClick={() => setShowInbox(!showInbox)} className={`relative p-3 rounded-2xl transition-all border ${showInbox ? 'bg-indigo-600 text-white border-indigo-500 shadow-xl shadow-indigo-600/20 scale-105' : 'bg-white/5 text-slate-500 border-white/5 hover:text-white'}`}>
+                    <Icons.Mail />
+                    {(friendRequests.length > 0 || groupInvites.length > 0) && (
+                      <div className="absolute top-2 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#050505] animate-bounce"></div>
+                    )}
+                  </button>
                   {activeGroup.ownerId === user.id && activeGroup.name !== 'My Space' && (
-                    <div className="relative">
-                      <button onClick={() => setShowInviteMenu(!showInviteMenu)} className="bg-indigo-600 text-white px-4 py-2 rounded-full text-[11px] font-bold uppercase hover:bg-indigo-500">Pozovi</button>
-                      {showInviteMenu && (
-                        <div className="absolute right-0 top-full mt-3 bg-[#16161a] border border-white/10 p-2 rounded-2xl w-56 shadow-2xl z-50">
-                          <p className="text-[9px] text-slate-500 uppercase font-black px-2 py-1">Tvoji Prijatelji</p>
-                          {friendsList.filter(f => !activeGroup.members.includes(f.id)).map(f => (
-                            <button key={f.id} onClick={() => {
-                               const all = getFromStorage('cl_group_invites') || [];
-                               saveToStorage('cl_group_invites', [...all, { id: Math.random().toString(36).substring(2), groupId: activeGroup.id, groupName: activeGroup.name, fromUsername: user.username, toId: f.id }]);
-                               setShowInviteMenu(false); alert("Poziv poslat!");
-                            }} className="w-full text-left p-2.5 hover:bg-white/5 rounded-xl text-xs flex items-center gap-3">
-                               <img src={f.avatar} className="w-6 h-6 rounded-full" /> {f.username}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                    <button onClick={() => setShowInviteMenu(!showInviteMenu)} className="bg-indigo-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-all active:scale-95 shadow-lg shadow-indigo-600/20">Pozovi Tim</button>
                   )}
-                  <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest border border-white/5 px-4 py-2 rounded-full flex items-center gap-2">
-                    <div className="w-1 h-1 bg-amber-500 rounded-full"></div> 1h Life
-                  </div>
                </div>
             </div>
 
-            {/* SPLIT VIEW */}
             <div className="flex-1 flex overflow-hidden">
-              {/* Left: Messages (Chat) */}
-              <div className="flex-[0.65] border-r border-white/5 flex flex-col bg-[#050505]">
-                <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {/* CHAT PANEL - Left side of Workspace */}
+              <div className="flex-1 flex flex-col border-r border-white/5 bg-[#050505]">
+                <div className="flex-1 overflow-y-auto p-8 space-y-6">
                   {messages.filter(m => m.type === 'text').map(msg => (
-                    <div key={msg.id} className={`flex gap-3 ${msg.senderId === user.id ? 'flex-row-reverse' : 'flex-row'}`}>
-                      <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-full border border-white/5 bg-slate-900 shrink-0" alt="" />
-                      <div className={`flex flex-col max-w-[80%] ${msg.senderId === user.id ? 'items-end' : 'items-start'}`}>
-                        <span className="text-[10px] text-slate-500 mb-1 px-1 font-bold">{msg.senderName}</span>
-                        <div className={`p-3.5 rounded-2xl text-sm leading-relaxed ${msg.senderId === user.id ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-[#16161a] border border-white/5 text-slate-200 rounded-tl-none'}`}>
+                    <div key={msg.id} className={`flex gap-4 ${msg.senderId === user.id ? 'flex-row-reverse' : ''} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
+                      <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-xl bg-slate-900 shrink-0 border border-white/10" alt="" />
+                      <div className={`flex flex-col max-w-[75%] ${msg.senderId === user.id ? 'items-end' : ''}`}>
+                        <div className="flex items-center gap-2 mb-1.5 px-1">
+                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">{msg.senderName}</span>
+                          <span className="text-[8px] text-slate-700 font-bold">{new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                        </div>
+                        <div className={`p-4 rounded-[24px] text-xs leading-relaxed shadow-sm ${msg.senderId === user.id ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-[#121216] border border-white/5 text-slate-200 rounded-tl-none'}`}>
                           {msg.text}
                         </div>
                       </div>
@@ -369,32 +347,29 @@ export default function App() {
                   ))}
                   <div ref={chatEndRef} />
                 </div>
-                
-                <div className="p-6 bg-[#050505]">
-                   <div className="flex items-end gap-3 bg-[#0f0f12] border border-white/5 rounded-3xl p-2 focus-within:border-indigo-500/50">
-                      <textarea rows={1} placeholder="Tekstualna poruka..." className="flex-1 bg-transparent py-4 px-4 text-sm outline-none resize-none text-white" 
-                        onKeyDown={e => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage((e.target as any).value); (e.target as any).value = ''; } }} />
-                   </div>
+                <div className="p-6 border-t border-white/5 bg-[#050505]">
+                  <ChatInput onSend={handleSendMessage} />
                 </div>
               </div>
 
-              {/* Right: Files (Gallery) */}
-              <div className="flex-[0.35] bg-[#0a0a0c] flex flex-col">
-                <div className="p-4 border-b border-white/5 flex items-center justify-between">
-                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Shared Files</span>
-                  <input type="file" id="file-up" className="hidden" onChange={e => { if(e.target.files?.[0]) handleSendMessage('', e.target.files[0]); e.target.value = ''; }} />
-                  <label htmlFor="file-up" className="p-2 bg-indigo-600/10 text-indigo-400 rounded-lg hover:bg-indigo-600 hover:text-white transition-all cursor-pointer"><Icons.Paperclip /></label>
+              {/* FILE GALLERY - Right side of Workspace */}
+              <div className="w-[340px] bg-[#0a0a0c] flex flex-col shrink-0">
+                <div className="p-6 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#0a0a0c]/80 backdrop-blur-md">
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Asset Lab</span>
+                    <span className="text-[8px] font-bold text-slate-700">1H EPHEMERAL STORAGE</span>
+                  </div>
+                  <input type="file" id="file-up" className="hidden" onChange={e => { if(e.target.files?.[0]) handleSendMessage('', e.target.files[0]); e.target.value=''; }} />
+                  <label htmlFor="file-up" className="p-3 bg-indigo-600 text-white rounded-2xl cursor-pointer hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-600/10 active:scale-95"><Icons.Paperclip /></label>
                 </div>
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <div className="flex-1 overflow-y-auto p-6 space-y-6">
                   {messages.filter(m => m.type === 'file').map(msg => (
-                    <div key={msg.id} className="animate-in fade-in slide-in-from-right-2">
-                       <FileItem file={msg.file!} sender={msg.senderName} time={msg.timestamp} />
-                    </div>
+                    <FileItem key={msg.id} file={msg.file!} sender={msg.senderName} time={msg.timestamp} expiresAt={msg.expiresAt} />
                   ))}
                   {messages.filter(m => m.type === 'file').length === 0 && (
-                    <div className="text-center py-20 opacity-20">
-                      <Icons.File />
-                      <p className="text-[10px] mt-2 font-bold uppercase tracking-widest">Nema fajlova</p>
+                    <div className="text-center py-20 opacity-10 flex flex-col items-center select-none">
+                      <div className="mb-4 scale-150"><Icons.File /></div>
+                      <p className="text-[9px] font-black uppercase tracking-[0.3em]">Nema Fajlova</p>
                     </div>
                   )}
                 </div>
@@ -404,46 +379,110 @@ export default function App() {
         )}
       </div>
 
-      {/* MODALS */}
-      {showAbout && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 rounded-[32px] w-full max-w-md p-8 overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-bold text-white italic">O Grupi</h3>
-                <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-full"><Icons.X /></button>
+      {/* RIGHT INBOX PANEL (Drawer) */}
+      {showInbox && (
+        <div className="w-96 bg-[#0f0f12] border-l border-white/10 flex flex-col shrink-0 shadow-[-20px_0_50px_rgba(0,0,0,0.8)] z-[100] animate-in slide-in-from-right duration-400">
+           <div className="p-8 border-b border-white/5 flex items-center justify-between shrink-0">
+              <div className="flex flex-col">
+                <span className="font-black text-sm uppercase text-white italic tracking-tighter">Inboks Obaveštenja</span>
+                <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest">Timski Zahtevi</span>
               </div>
-              <div className="space-y-6">
-                 <div>
-                   <p className="text-[10px] text-slate-500 uppercase font-black mb-3">Naziv</p>
-                   <p className="text-white font-bold text-lg">{activeGroup?.name}</p>
+              <button onClick={() => setShowInbox(false)} className="p-2 hover:bg-white/5 rounded-xl text-slate-500 hover:text-white transition-all"><Icons.X /></button>
+           </div>
+           <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {friendRequests.length === 0 && groupInvites.length === 0 && (
+                <div className="text-center py-32 opacity-20 flex flex-col items-center italic text-[10px] uppercase tracking-widest select-none font-bold">
+                  <div className="mb-4"><Icons.Mail /></div>
+                  Mirno je ovde...
+                </div>
+              )}
+              {friendRequests.map(req => (
+                <div key={req.id} className="bg-indigo-600/5 border border-indigo-500/10 p-5 rounded-3xl space-y-4 group transition-all hover:border-indigo-500/30">
+                  <div className="flex items-center gap-3">
+                    <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${req.fromUsername}`} className="w-8 h-8 rounded-xl bg-slate-900" />
+                    <div className="flex flex-col">
+                      <span className="text-[11px] font-black text-white">{req.fromUsername}</span>
+                      <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">Želi da se poveže</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => handleAcceptRequest(req)} className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-600/10">Prihvati</button>
+                    <button onClick={() => {
+                       const all = getFromStorage('cl_reqs') || [];
+                       saveToStorage('cl_reqs', all.filter((r:any) => r.id !== req.id));
+                    }} className="px-4 py-2.5 bg-white/5 rounded-xl text-slate-400 hover:text-red-500 transition-all"><Icons.X /></button>
+                  </div>
+                </div>
+              ))}
+              {groupInvites.map(inv => (
+                <div key={inv.id} className="bg-emerald-500/5 border border-emerald-500/10 p-5 rounded-3xl space-y-4 group transition-all hover:border-emerald-500/30">
+                  <div className="flex flex-col">
+                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em] mb-1">Poziv Za Lab</span>
+                    <span className="text-sm font-black text-white italic truncate">{inv.groupName}</span>
+                    <span className="text-[10px] font-medium text-emerald-400 mt-1">od {inv.fromUsername}</span>
+                  </div>
+                  <button onClick={() => handleAcceptInvite(inv)} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-600/10 italic">Uđi u Workspace</button>
+                </div>
+              ))}
+           </div>
+        </div>
+      )}
+
+      {/* ABOUT MODAL */}
+      {showAbout && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-[200] flex items-center justify-center p-6 animate-in fade-in duration-300" onClick={() => setShowAbout(false)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-[48px] w-full max-w-sm p-10 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-600/10 blur-3xl rounded-full translate-x-10 -translate-y-10"></div>
+              <div className="flex justify-between items-center mb-8 relative z-10">
+                 <div className="flex flex-col">
+                   <h3 className="font-black italic text-2xl uppercase tracking-tighter text-white">Lab Info</h3>
+                   <span className="text-[9px] font-black text-indigo-500 tracking-[0.3em] uppercase">Session Details</span>
                  </div>
-                 <div>
-                   <p className="text-[10px] text-slate-500 uppercase font-black mb-3">Članovi ({activeMembers.length})</p>
-                   <div className="space-y-3">
-                     {activeMembers.map(m => (
-                       <div key={m.id} className="flex items-center justify-between">
-                         <div className="flex items-center gap-3">
-                           <img src={m.avatar} className="w-8 h-8 rounded-full border border-white/5" />
-                           <span className="text-sm font-medium">{m.username} {m.id === activeGroup?.ownerId && <span className="text-[9px] text-indigo-500 font-bold ml-1">(Owner)</span>}</span>
+                 <button onClick={() => setShowAbout(false)} className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all"><Icons.X /></button>
+              </div>
+              <div className="space-y-8 relative z-10">
+                <div>
+                  <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest mb-4">Timski Članovi</p>
+                  <div className="space-y-3">
+                    {activeMembers.map(m => (
+                      <div key={m.id} className="flex items-center justify-between p-2 rounded-2xl hover:bg-white/5 transition-all">
+                         <div className="flex items-center gap-4">
+                           <img src={m.avatar} className="w-8 h-8 rounded-xl bg-slate-900 border border-white/5" />
+                           <div className="flex flex-col">
+                            <span className="text-[11px] font-black text-slate-200">{m.username} {m.id === activeGroup?.ownerId && <span className="text-indigo-500 ml-1">👑</span>}</span>
+                            <span className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter">{isOnline(m) ? 'Active Now' : 'Last Seen Recently'}</span>
+                           </div>
                          </div>
-                         <div className={`w-2 h-2 rounded-full ${isOnline(m) ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-slate-800'}`}></div>
-                       </div>
-                     ))}
+                         <div className={`w-2 h-2 rounded-full ${isOnline(m) ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-slate-800'}`}></div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                   <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest mb-3">Group Token</p>
+                   <div className="bg-black/50 border border-white/5 p-4 rounded-2xl flex items-center justify-between group cursor-pointer" onClick={() => { navigator.clipboard.writeText(activeGroup?.id || ''); alert("ID kopiran!"); }}>
+                    <code className="text-[10px] text-indigo-400 font-mono truncate">{activeGroup?.id}</code>
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity text-[8px] font-black text-slate-500 uppercase">Kopiraj</div>
                    </div>
-                 </div>
+                </div>
               </div>
            </div>
         </div>
       )}
 
+      {/* PLANS MODAL */}
       {showPlans && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm z-[100] flex items-center justify-center p-6" onClick={() => setShowPlans(false)}>
-          <div className="bg-[#0f0f12] border border-white/5 rounded-[40px] w-full max-w-4xl p-12 overflow-y-auto max-h-[90vh]" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-10">
-              <h3 className="text-3xl font-bold text-white italic">Upgrade Lab</h3>
-              <button onClick={() => setShowPlans(false)} className="p-3 bg-white/5 rounded-full hover:bg-white/10"><Icons.X /></button>
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-2xl z-[300] flex items-center justify-center p-6 animate-in zoom-in-95 duration-300" onClick={() => setShowPlans(false)}>
+          <div className="bg-[#0f0f12] border border-white/5 rounded-[56px] w-full max-w-4xl p-16 shadow-2xl relative overflow-hidden max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="absolute top-0 left-0 w-64 h-64 bg-indigo-600/10 blur-[100px] rounded-full -translate-x-32 -translate-y-32"></div>
+            <div className="flex justify-between items-center mb-12 relative z-10">
+              <div className="flex flex-col">
+                <h3 className="text-4xl font-black text-white italic uppercase tracking-tighter">Lab Upgrade</h3>
+                <span className="text-xs font-bold text-indigo-500 tracking-[0.4em] uppercase mt-2">Scale Your Collaboration</span>
+              </div>
+              <button onClick={() => setShowPlans(false)} className="p-4 bg-white/5 rounded-3xl hover:bg-white/10 transition-all border border-white/5"><Icons.X /></button>
             </div>
-            <div className="grid md:grid-cols-3 gap-8">
+            <div className="grid md:grid-cols-3 gap-10 relative z-10">
               <PlanCard title="Free" price="0" limit="10MB" current={user.plan === 'free'} onSelect={() => setUser({...user, plan: 'free'})} />
               <PlanCard title="Pro" price="9" limit="30MB" highlight current={user.plan === 'pro'} onSelect={() => setUser({...user, plan: 'pro'})} />
               <PlanCard title="Premium" price="19" limit="100MB" current={user.plan === 'premium'} onSelect={() => setUser({...user, plan: 'premium'})} />
@@ -451,24 +490,133 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* INVITE MODAL */}
+      {showInviteMenu && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[200] flex items-center justify-center p-6" onClick={() => setShowInviteMenu(false)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-xs p-10 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-6">
+                 <h4 className="text-[12px] font-black uppercase text-white tracking-widest italic">Invite Friends</h4>
+                 <button onClick={() => setShowInviteMenu(false)} className="text-slate-500"><Icons.X /></button>
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-2 pr-2">
+                {friendsList.filter(f => !activeGroup?.members?.includes(f.id)).map(f => (
+                  <button key={f.id} onClick={() => {
+                    const all = getFromStorage('cl_group_invites') || [];
+                    saveToStorage('cl_group_invites', [...all, { id: Math.random().toString(36).substring(2), groupId: activeGroup!.id, groupName: activeGroup!.name, fromUsername: user.username, toId: f.id }]);
+                    setShowInviteMenu(false); alert("Poziv poslat!");
+                  }} className="w-full flex items-center gap-3 p-3 hover:bg-indigo-600/10 border border-transparent hover:border-indigo-500/20 rounded-2xl text-[12px] font-bold group transition-all">
+                    <img src={f.avatar} className="w-8 h-8 rounded-xl border border-white/10 group-hover:scale-105 transition-transform" /> 
+                    <span className="truncate">{f.username}</span>
+                  </button>
+                ))}
+                {friendsList.filter(f => !activeGroup?.members?.includes(f.id)).length === 0 && (
+                  <p className="text-[10px] text-center text-slate-600 italic font-medium py-10 uppercase tracking-widest">Svi tvoji prijatelji su već u labu.</p>
+                )}
+              </div>
+           </div>
+        </div>
+      )}
     </div>
   );
 }
 
-const FileItem = ({ file, sender, time }: { file: SharedFile, sender: string, time: number }) => {
+const ChatInput: React.FC<{ onSend: (t: string) => void }> = ({ onSend }) => {
+  const [text, setText] = useState('');
+  const handleSend = () => { if(text.trim()) { onSend(text); setText(''); } };
+  return (
+    <div className="flex items-end gap-3 bg-[#0f0f12] border border-white/5 rounded-[28px] p-3 focus-within:border-indigo-500/40 transition-all shadow-inner">
+      <textarea 
+        rows={1} 
+        value={text} 
+        onChange={e => setText(e.target.value)} 
+        onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} 
+        placeholder="Piši ovde..." 
+        className="flex-1 bg-transparent py-3 px-5 text-sm outline-none resize-none text-white placeholder:text-slate-700 font-medium" 
+      />
+      <button 
+        onClick={handleSend} 
+        className={`p-4 rounded-2xl transition-all shadow-lg active:scale-95 ${text.trim() ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700 cursor-not-allowed'}`}
+      >
+        <Icons.Send />
+      </button>
+    </div>
+  );
+};
+
+const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expiresAt: number }> = ({ file, sender, time, expiresAt }) => {
+  const [timeLeft, setTimeLeft] = useState(Math.round((expiresAt - Date.now()) / 1000 / 60));
+  const [aiFeedback, setAiFeedback] = useState<string | null>(null);
+  const [loadingAi, setLoadingAi] = useState(false);
+
+  useEffect(() => {
+    const timer = setInterval(() => setTimeLeft(Math.max(0, Math.round((expiresAt - Date.now()) / 1000 / 60))), 30000);
+    return () => clearInterval(timer);
+  }, [expiresAt]);
+
+  const handleAiFeedback = async () => {
+    setLoadingAi(true);
+    const feedback = await getFeedbackOnMessage(`Check out this file: ${file.name}`, "A file shared for review");
+    setAiFeedback(feedback || "No insights found.");
+    setLoadingAi(false);
+  };
+
   const isImg = file.type.startsWith('image/');
   const isVid = file.type.startsWith('video/');
+
   return (
-    <div className="bg-[#16161a] border border-white/5 rounded-2xl overflow-hidden shadow-lg group">
-      {isImg && <img src={file.url} className="w-full h-auto max-h-48 object-cover border-b border-white/5" />}
-      {isVid && <video src={file.url} controls className="w-full h-auto max-h-48 border-b border-white/5" />}
-      <div className="p-4">
-        <div className="flex items-start justify-between gap-3 mb-2">
+    <div className="bg-[#121216] border border-white/5 rounded-3xl overflow-hidden shadow-2xl group relative animate-in zoom-in-95 duration-300">
+      <div className="absolute top-3 left-3 z-10 bg-indigo-600 px-3 py-1.5 rounded-xl text-[9px] font-black text-white border border-indigo-400/30 shadow-xl uppercase tracking-tighter">
+        {timeLeft}m left
+      </div>
+      
+      {isImg && (
+        <div className="relative overflow-hidden aspect-video bg-black">
+          <img src={file.url} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
+        </div>
+      )}
+      
+      {isVid && (
+        <div className="aspect-video bg-black flex items-center justify-center">
+          <video src={file.url} className="w-full h-full object-contain" controls />
+        </div>
+      )}
+
+      {!isImg && !isVid && (
+        <div className="h-32 bg-indigo-900/10 flex items-center justify-center text-indigo-500 border-b border-white/5">
+          <Icons.File />
+        </div>
+      )}
+
+      <div className="p-5">
+        <div className="flex items-start justify-between gap-3 mb-4">
            <div className="min-w-0">
-              <p className="text-xs font-bold text-white truncate mb-1">{file.name}</p>
-              <p className="text-[10px] text-slate-500">{(file.size / 1024 / 1024).toFixed(1)} MB • {sender}</p>
+              <p className="text-[11px] font-black text-white truncate uppercase tracking-tight">{file.name}</p>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[9px] font-black text-indigo-500 uppercase tracking-tighter">{(file.size / 1024 / 1024).toFixed(1)}MB</span>
+                <span className="text-[9px] text-slate-700 font-bold">•</span>
+                <span className="text-[9px] text-slate-500 font-bold uppercase truncate">{sender}</span>
+              </div>
            </div>
-           <a href={file.url} download={file.name} className="p-2 bg-indigo-600/10 text-indigo-400 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"><Icons.Download /></a>
+           <a href={file.url} download={file.name} className="p-3 bg-white/5 text-slate-400 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all border border-white/5 active:scale-95"><Icons.Download /></a>
+        </div>
+
+        {/* AI Feedback Button - Idea for Lab */}
+        <div className="pt-4 border-t border-white/5">
+          {aiFeedback ? (
+            <div className="bg-indigo-600/10 border border-indigo-500/20 p-3 rounded-2xl animate-in fade-in slide-in-from-top-1">
+              <p className="text-[10px] text-indigo-400 leading-relaxed font-medium">"{aiFeedback}"</p>
+              <p className="text-[7px] font-black text-indigo-700 uppercase mt-2 tracking-widest">Lab Assistant AI</p>
+            </div>
+          ) : (
+            <button 
+              onClick={handleAiFeedback}
+              disabled={loadingAi}
+              className="w-full py-2.5 bg-white/5 hover:bg-white/10 text-[9px] font-black text-slate-500 hover:text-indigo-400 uppercase tracking-[0.2em] rounded-xl transition-all border border-dashed border-white/10"
+            >
+              {loadingAi ? 'Analiziranje Lab Asseta...' : 'Traži AI Feedback'}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -476,16 +624,18 @@ const FileItem = ({ file, sender, time }: { file: SharedFile, sender: string, ti
 };
 
 const PlanCard = ({ title, price, limit, highlight, current, onSelect }: any) => (
-  <div className={`p-8 rounded-[32px] border-2 transition-all flex flex-col ${highlight ? 'border-indigo-600 bg-indigo-600/5 shadow-2xl scale-105 z-10' : 'border-white/5 bg-white/5 hover:border-white/10'}`}>
-    <h4 className="text-lg font-bold text-white mb-2">{title}</h4>
-    <div className="text-4xl font-black text-white mb-8">${price}<span className="text-sm text-slate-500 font-normal">/mo</span></div>
-    <ul className="space-y-4 mb-10 flex-1 text-sm text-slate-400">
-      <li className="flex items-center gap-2"><div className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></div> Fajlovi do {limit}</li>
-      <li className="flex items-center gap-2"><div className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></div> Split View Dashboard</li>
-      <li className="flex items-center gap-2"><div className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></div> 1h Memorija</li>
+  <div className={`p-10 rounded-[48px] border-2 transition-all flex flex-col relative group ${highlight ? 'border-indigo-600 bg-indigo-600/5 shadow-[0_0_80px_rgba(99,102,241,0.15)] scale-105 z-10' : 'border-white/5 bg-white/5 hover:border-white/10'}`}>
+    {highlight && <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest italic shadow-xl">Preporučeno</div>}
+    <h4 className="text-xl font-black text-white mb-2 italic uppercase tracking-tighter">{title}</h4>
+    <div className="text-5xl font-black text-white mb-10 tracking-tighter">${price}<span className="text-sm text-slate-700 font-normal tracking-normal ml-1 italic">/mo</span></div>
+    <ul className="space-y-5 mb-12 flex-1 text-xs text-slate-400 font-medium">
+      <li className="flex items-center gap-3"><div className="text-indigo-500 shrink-0"><Icons.Check /></div> {limit} Max File Size</li>
+      <li className="flex items-center gap-3"><div className="text-indigo-500 shrink-0"><Icons.Check /></div> Real-time Timski Lab</li>
+      <li className="flex items-center gap-3"><div className="text-indigo-500 shrink-0"><Icons.Check /></div> Ephemeral 1H Storage</li>
+      <li className={`flex items-center gap-3 ${title === 'Free' ? 'opacity-20' : ''}`}><div className={`${title === 'Free' ? 'text-slate-700' : 'text-indigo-500'} shrink-0`}><Icons.Check /></div> Priority Lab Support</li>
     </ul>
-    <button onClick={onSelect} disabled={current} className={`w-full py-4 rounded-2xl font-bold transition-all ${current ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/20' : highlight ? 'bg-indigo-600 text-white hover:bg-indigo-500' : 'bg-white text-black hover:bg-slate-200'}`}>
-      {current ? 'Aktivan' : 'Odaberi'}
+    <button onClick={onSelect} disabled={current} className={`w-full py-5 rounded-[28px] font-black uppercase tracking-widest transition-all ${current ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 shadow-inner' : highlight ? 'bg-indigo-600 text-white hover:bg-indigo-500 shadow-xl shadow-indigo-600/30' : 'bg-white text-black hover:bg-slate-200 shadow-lg shadow-white/5'}`}>
+      {current ? 'Aktivan Plan' : 'Aktiviraj'}
     </button>
   </div>
 );
