@@ -1,0 +1,8 @@
+{
+  "name": "Collab Lab",
+  "description": "A lightweight collaborative workspace for instant file sharing, ephemeral messaging, and team feedback with AI-powered insights.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
