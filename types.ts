@@ -8,6 +8,7 @@ export interface User {
   avatar: string;
   plan: Plan;
   friends: string[]; // User IDs
+  lastSeen?: number; // Timestamp for online status
 }
 
 export interface FriendRequest {
@@ -40,7 +41,7 @@ export interface Message {
   senderId: string;
   senderName: string;
   text: string;
-  type: 'text' | 'file' | 'system';
+  type: 'text' | 'file';
   file?: SharedFile;
   timestamp: number;
   expiresAt: number;
