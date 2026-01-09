@@ -18,6 +18,14 @@ export interface FriendRequest {
   timestamp: number;
 }
 
+export interface GroupInvite {
+  id: string;
+  groupId: string;
+  groupName: string;
+  fromUsername: string;
+  toId: string;
+}
+
 export interface Group {
   id: string;
   name: string;
