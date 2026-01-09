@@ -23,7 +23,9 @@ const AuthPage: React.FC<{ onAuth: (user: User) => void }> = ({ onAuth }) => {
       if (user) {
         ensureMySpace(user);
         onAuth(user);
-      } else alert('Korisnik nije pronađen');
+      } else {
+        alert('Korisnik nije pronađen'); // Ostavljamo ovaj alert privremeno jer nemamo globalni toast ovde, ali unutar app menjamo sve
+      }
     } else {
       if (users.some(u => u.username === username)) {
         alert("Korisničko ime već postoji!");
@@ -96,8 +98,16 @@ export default function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
   
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -111,10 +121,16 @@ export default function App() {
       }
 
       const reqs: FriendRequest[] = getFromStorage('cl_reqs') || [];
-      setFriendRequests(reqs.filter(r => r.toId === user.id));
+      const myReqs = reqs.filter(r => r.toId === user.id);
+      if (JSON.stringify(myReqs) !== JSON.stringify(friendRequests)) {
+        setFriendRequests(myReqs);
+      }
       
       const invites: GroupInvite[] = getFromStorage('cl_group_invites') || [];
-      setGroupInvites(invites.filter(i => i.toId === user.id));
+      const myInvites = invites.filter(i => i.toId === user.id);
+      if (JSON.stringify(myInvites) !== JSON.stringify(groupInvites)) {
+        setGroupInvites(myInvites);
+      }
 
       const allGroups: Group[] = getFromStorage('cl_groups') || [];
       setGroups(allGroups.filter(g => g.members.includes(user.id)));
@@ -130,7 +146,7 @@ export default function App() {
       }
     }, 1500);
     return () => clearInterval(interval);
-  }, [user, activeGroupId, messages]);
+  }, [user, activeGroupId, messages, friendRequests, groupInvites]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -139,13 +155,16 @@ export default function App() {
   const handleSendFriendRequest = () => {
     if (!user || !searchQuery) return;
     const target = allUsers.find(u => u.username === searchQuery);
-    if (!target) { alert("Korisnik nije pronađen."); return; }
+    if (!target) { showToast("Korisnik nije pronađen.", 'error'); return; }
     if (target.id === user.id) return;
     const reqs: FriendRequest[] = getFromStorage('cl_reqs') || [];
-    if (reqs.some(r => r.fromId === user.id && r.toId === target.id)) return;
+    if (reqs.some(r => r.fromId === user.id && r.toId === target.id)) {
+      showToast("Zahtev je već poslat.", 'error');
+      return;
+    }
     const newReq = { id: Math.random().toString(36).substring(2), fromId: user.id, fromUsername: user.username, toId: target.id, timestamp: Date.now() };
     saveToStorage('cl_reqs', [...reqs, newReq]);
-    alert("Zahtev poslat!");
+    showToast("Zahtev poslat!");
     setSearchQuery('');
   };
 
@@ -161,6 +180,7 @@ export default function App() {
     }
     const allReqs: FriendRequest[] = getFromStorage('cl_reqs') || [];
     saveToStorage('cl_reqs', allReqs.filter(r => r.id !== req.id));
+    showToast("Prijatelj dodat!");
   };
 
   const handleAcceptInvite = (inv: GroupInvite) => {
@@ -173,6 +193,18 @@ export default function App() {
     const allInvites: GroupInvite[] = getFromStorage('cl_group_invites') || [];
     saveToStorage('cl_group_invites', allInvites.filter(i => i.id !== inv.id));
     setActiveGroupId(inv.groupId);
+    showToast("Ušao si u grupu!");
+  };
+
+  const handleCreateGroup = () => {
+    if (!newGroupName.trim()) return;
+    const newG = { id: Math.random().toString(36).substring(2,9), name: newGroupName, ownerId: user!.id, members: [user!.id], createdAt: Date.now() };
+    const all = getFromStorage('cl_groups') || [];
+    saveToStorage('cl_groups', [...all, newG]);
+    setShowCreateGroup(false);
+    setNewGroupName('');
+    setActiveGroupId(newG.id);
+    showToast("Grupa kreirana!");
   };
 
   const handleSendMessage = (text: string, file?: File) => {
@@ -180,7 +212,7 @@ export default function App() {
     let sharedFile: SharedFile | undefined;
     if (file) {
       const limit = PLAN_LIMITS[user.plan];
-      if (file.size > limit) { alert("Fajl prevelik!"); return; }
+      if (file.size > limit) { showToast("Fajl prevelik za tvoj plan!", 'error'); return; }
       sharedFile = { name: file.name, size: file.size, type: file.type, url: URL.createObjectURL(file) };
     }
     const newMessage: Message = {
@@ -198,6 +230,7 @@ export default function App() {
     const existing = getFromStorage(msgKey) || [];
     saveToStorage(msgKey, [...existing, newMessage]);
     setMessages([...existing, newMessage]);
+    if (file) showToast("Fajl je poslat!");
   };
 
   const isOnline = (u: User) => u.lastSeen && (Date.now() - u.lastSeen < 10000);
@@ -208,16 +241,32 @@ export default function App() {
   const activeMembers = allUsers.filter(u => activeGroup?.members?.includes(u.id) ?? false);
 
   return (
-    <div className="flex h-screen bg-[#050505] text-slate-300 overflow-hidden">
+    <div className="flex h-screen bg-[#050505] text-slate-300 overflow-hidden relative">
       
+      {/* GLOBAL TOAST */}
+      {toast && (
+        <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[500] px-6 py-3 rounded-2xl font-bold uppercase tracking-widest text-[10px] shadow-2xl animate-in slide-in-from-top-4 ${toast.type === 'error' ? 'bg-red-600 text-white' : 'bg-emerald-600 text-white'}`}>
+          {toast.message}
+        </div>
+      )}
+
       {/* SIDEBAR - DUAL COLUMN (FRIENDS | GROUPS) */}
       <div className="w-[480px] bg-[#0f0f12] border-r border-white/5 flex shrink-0 shadow-2xl z-30">
         
-        {/* Left Column: Friends (Full Height, 50% Sidebar Width) */}
+        {/* Left Column: Friends */}
         <div className="w-1/2 border-r border-white/5 flex flex-col h-full">
-          <div className="p-5 border-b border-white/5 flex items-center gap-2 shrink-0">
-            <div className="text-indigo-500"><Icons.Users /></div>
-            <span className="font-bold text-[10px] uppercase tracking-[0.2em] text-indigo-400">Prijatelji</span>
+          <div className="p-5 border-b border-white/5 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <div className="text-indigo-500"><Icons.Users /></div>
+              <span className="font-bold text-[10px] uppercase tracking-[0.2em] text-indigo-400">Prijatelji</span>
+            </div>
+            {/* Inbox Button uvek vidljiv ovde */}
+            <button onClick={() => setShowInbox(!showInbox)} className={`relative p-2 rounded-xl transition-all ${showInbox ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-slate-500'}`}>
+              <Icons.Mail />
+              {(friendRequests.length > 0 || groupInvites.length > 0) && (
+                <div className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-[#0f0f12] animate-pulse"></div>
+              )}
+            </button>
           </div>
           <div className="p-4 border-b border-white/5 shrink-0">
             <div className="flex gap-2">
@@ -243,21 +292,14 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right Column: Groups (Full Height, 50% Sidebar Width) */}
+        {/* Right Column: Groups */}
         <div className="w-1/2 flex flex-col h-full bg-[#0a0a0c]">
           <div className="p-5 border-b border-white/5 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
               <div className="text-emerald-500"><Icons.Video /></div>
               <span className="font-bold text-[10px] uppercase tracking-[0.2em] text-emerald-400">Lab Sobe</span>
             </div>
-            <button onClick={() => {
-              const name = prompt("Ime nove grupe:");
-              if(name) {
-                const newG = { id: Math.random().toString(36).substring(2,9), name, ownerId: user.id, members: [user.id], createdAt: Date.now() };
-                const all = getFromStorage('cl_groups') || [];
-                saveToStorage('cl_groups', [...all, newG]);
-              }
-            }} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-xl hover:bg-emerald-500 hover:text-white transition-all"><Icons.Plus /></button>
+            <button onClick={() => setShowCreateGroup(true)} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-xl hover:bg-emerald-500 hover:text-white transition-all"><Icons.Plus /></button>
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-2">
             {groups.sort((a,b) => a.name === 'My Space' ? -1 : 1).map(g => (
@@ -268,7 +310,6 @@ export default function App() {
             ))}
           </div>
           
-          {/* User Profile Footer */}
           <div className="p-5 border-t border-white/5 bg-black/40 shrink-0">
              <div className="flex items-center gap-3">
                <img src={user.avatar} className="w-10 h-10 rounded-2xl border border-white/5" />
@@ -314,12 +355,6 @@ export default function App() {
                </div>
                
                <div className="flex items-center gap-4">
-                  <button onClick={() => setShowInbox(!showInbox)} className={`relative p-3 rounded-2xl transition-all border ${showInbox ? 'bg-indigo-600 text-white border-indigo-500 shadow-xl shadow-indigo-600/20 scale-105' : 'bg-white/5 text-slate-500 border-white/5 hover:text-white'}`}>
-                    <Icons.Mail />
-                    {(friendRequests.length > 0 || groupInvites.length > 0) && (
-                      <div className="absolute top-2 right-2 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#050505] animate-bounce"></div>
-                    )}
-                  </button>
                   {activeGroup.ownerId === user.id && activeGroup.name !== 'My Space' && (
                     <button onClick={() => setShowInviteMenu(!showInviteMenu)} className="bg-indigo-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-all active:scale-95 shadow-lg shadow-indigo-600/20">Pozovi Tim</button>
                   )}
@@ -421,7 +456,38 @@ export default function App() {
         </div>
       )}
 
-      {/* MODALS: ABOUT, PLANS, INVITE remain same but without AI logic */}
+      {/* CREATE GROUP MODAL */}
+      {showCreateGroup && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-[400] flex items-center justify-center p-6 animate-in fade-in duration-300" onClick={() => setShowCreateGroup(false)}>
+          <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-sm p-10 shadow-2xl relative" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-8">
+              <div className="flex flex-col">
+                <h3 className="font-black italic text-2xl uppercase tracking-tighter text-white">Nova Lab Soba</h3>
+                <span className="text-[9px] font-black text-emerald-500 tracking-[0.3em] uppercase">Kreiraj Workspace</span>
+              </div>
+              <button onClick={() => setShowCreateGroup(false)} className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all"><Icons.X /></button>
+            </div>
+            <div className="space-y-6">
+              <input 
+                type="text" 
+                placeholder="Ime Grupe..." 
+                className="w-full bg-white/5 border border-white/5 rounded-2xl px-5 py-4 text-sm outline-none focus:border-emerald-500 transition-all text-white font-bold"
+                value={newGroupName}
+                onChange={e => setNewGroupName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleCreateGroup()}
+              />
+              <button 
+                onClick={handleCreateGroup}
+                className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-600/20"
+              >
+                Kreiraj Sobu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ABOUT MODAL */}
       {showAbout && (
         <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-[200] flex items-center justify-center p-6 animate-in fade-in duration-300" onClick={() => setShowAbout(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-[48px] w-full max-sm p-10 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -473,7 +539,7 @@ export default function App() {
                   <button key={f.id} onClick={() => {
                     const all = getFromStorage('cl_group_invites') || [];
                     saveToStorage('cl_group_invites', [...all, { id: Math.random().toString(36).substring(2), groupId: activeGroup!.id, groupName: activeGroup!.name, fromUsername: user.username, toId: f.id }]);
-                    setShowInviteMenu(false); alert("Poziv poslat!");
+                    setShowInviteMenu(false); showToast("Poziv poslat!");
                   }} className="w-full flex items-center gap-3 p-3 hover:bg-indigo-600/10 border border-transparent hover:border-indigo-500/20 rounded-2xl text-[12px] font-bold group transition-all">
                     <img src={f.avatar} className="w-8 h-8 rounded-xl border border-white/10 group-hover:scale-105 transition-transform" /> 
                     <span className="truncate">{f.username}</span>
@@ -533,7 +599,7 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expir
 };
 
 const PlanCard = ({ title, price, limit, highlight, current, onSelect }: any) => (
-  <div className={`p-10 rounded-[48px] border-2 transition-all flex flex-col relative group ${highlight ? 'border-indigo-600 bg-indigo-600/5 shadow-[0_0_80px_rgba(99,102,241,0.15)] scale-105 z-10' : 'border-white/5 bg-white/5 hover:border-white/10'}`}>
+  <div className={`p-10 rounded-[56px] border-2 transition-all flex flex-col relative group ${highlight ? 'border-indigo-600 bg-indigo-600/5 shadow-[0_0_80px_rgba(99,102,241,0.15)] scale-105 z-10' : 'border-white/5 bg-white/5 hover:border-white/10'}`}>
     {highlight && <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest italic shadow-xl">Preporučeno</div>}
     <h4 className="text-xl font-black text-white mb-2 italic uppercase tracking-tighter">{title}</h4>
     <div className="text-5xl font-black text-white mb-10 tracking-tighter">${price}<span className="text-sm text-slate-700 font-normal ml-1 italic">/mo</span></div>
