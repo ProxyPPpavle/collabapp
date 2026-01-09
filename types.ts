@@ -8,21 +8,22 @@ export interface User {
   avatar: string;
   plan: Plan;
   friends: string[]; // User IDs
-  friendRequests: FriendRequest[];
 }
 
 export interface FriendRequest {
+  id: string;
   fromId: string;
   fromUsername: string;
+  toId: string;
   timestamp: number;
 }
 
 export interface Group {
   id: string;
   name: string;
+  ownerId: string;
   members: string[]; // User IDs
   createdAt: number;
-  lastMessage?: string;
 }
 
 export interface Message {
@@ -41,14 +42,5 @@ export interface SharedFile {
   name: string;
   size: number;
   type: string;
-  url: string; // Object URL for preview/download
-  expiryTimer?: number;
-}
-
-export interface AppState {
-  currentUser: User | null;
-  groups: Group[];
-  activeGroupId: string | null;
-  messages: Record<string, Message[]>; // Group ID -> Messages
-  allUsers: User[]; // Mock database
+  url: string; 
 }
