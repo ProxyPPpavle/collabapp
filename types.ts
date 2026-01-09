@@ -8,7 +8,7 @@ export interface User {
   avatar: string;
   plan: Plan;
   friends: string[]; // User IDs
-  lastSeen?: number; // Timestamp for online status
+  lastSeen?: number;
 }
 
 export interface FriendRequest {
@@ -32,6 +32,7 @@ export interface Group {
   name: string;
   ownerId: string;
   members: string[]; // User IDs
+  mutedMembers?: string[]; // IDs of users who can't speak
   createdAt: number;
 }
 

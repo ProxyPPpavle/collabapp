@@ -23,12 +23,10 @@ const AuthPage: React.FC<{ onAuth: (user: User) => void }> = ({ onAuth }) => {
       if (user) {
         ensureMySpace(user);
         onAuth(user);
-      } else {
-        alert('Korisnik nije pronađen'); // Ostavljamo ovaj alert privremeno jer nemamo globalni toast ovde, ali unutar app menjamo sve
-      }
+      } else alert('Korisnik nije pronađen');
     } else {
       if (users.some(u => u.username === username)) {
-        alert("Korisničko ime već postoji!");
+        alert("Korisničko ime zauzeto!");
         return;
       }
       const newUser: User = {
@@ -61,25 +59,23 @@ const AuthPage: React.FC<{ onAuth: (user: User) => void }> = ({ onAuth }) => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#050505] p-6 relative overflow-hidden">
-      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-600/10 blur-[120px] rounded-full"></div>
-      <div className="bg-[#0f0f12] border border-white/5 p-10 rounded-[32px] w-full max-w-md shadow-2xl relative z-10">
+    <div className="min-h-screen flex items-center justify-center bg-[#050505] p-6">
+      <div className="bg-[#0f0f12] border border-white/10 p-10 rounded-2xl w-full max-w-md shadow-2xl">
         <div className="text-center mb-10">
-          <div className="w-16 h-16 bg-indigo-600/20 text-indigo-500 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-indigo-500/20">
+          <div className="w-16 h-16 bg-indigo-600/20 text-indigo-500 rounded-xl flex items-center justify-center mx-auto mb-6 border border-indigo-500/20">
             <Icons.Video />
           </div>
-          <h1 className="text-3xl font-bold text-white tracking-tight italic">Collab Lab</h1>
-          <p className="text-slate-500 mt-2 text-sm">Workspace & File Transfer</p>
+          <h1 className="text-2xl font-black text-white italic tracking-tighter uppercase">Collab Lab</h1>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           {!isLogin && (
-            <input type="text" placeholder="Username" required className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none text-white" value={username} onChange={(e) => setUsername(e.target.value)} />
+            <input type="text" placeholder="Username" required className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white text-sm" value={username} onChange={(e) => setUsername(e.target.value)} />
           )}
-          <input type="text" placeholder="Email ili Username" required className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none text-white" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <input type="password" placeholder="Lozinka" required className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none text-white" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <button type="submit" className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold hover:bg-indigo-500 transition-all">{isLogin ? 'Prijavi se' : 'Registracija'}</button>
+          <input type="text" placeholder="Email ili Username" required className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white text-sm" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input type="password" placeholder="Lozinka" required className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white text-sm" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <button type="submit" className="w-full bg-indigo-600 text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-500 transition-all">{isLogin ? 'Log In' : 'Sign Up'}</button>
         </form>
-        <button onClick={() => setIsLogin(!isLogin)} className="w-full mt-6 text-slate-500 text-sm">{isLogin ? "Nemaš nalog? Registruj se" : 'Imaš nalog? Prijavi se'}</button>
+        <button onClick={() => setIsLogin(!isLogin)} className="w-full mt-6 text-slate-500 text-xs font-bold uppercase tracking-widest">{isLogin ? "Registruj se" : 'Prijavi se'}</button>
       </div>
     </div>
   );
@@ -97,15 +93,17 @@ export default function App() {
   const [showInviteMenu, setShowInviteMenu] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [allUsers, setAllUsers] = useState<User[]>([]);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [toast, setToast] = useState<{ m: string; t: 'ok' | 'err' } | null>(null);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  const [selectedFile, setSelectedFile] = useState<SharedFile | null>(null);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
-    setToast({ message, type });
+  const showToast = (m: string, t: 'ok' | 'err' = 'ok') => {
+    setToast({ m, t });
     setTimeout(() => setToast(null), 3000);
   };
 
@@ -115,22 +113,20 @@ export default function App() {
       const users: User[] = getFromStorage('cl_users') || [];
       const meIdx = users.findIndex(u => u.id === user.id);
       if (meIdx > -1) {
-        users[meIdx].lastSeen = Date.now();
+        const updatedMe = users[meIdx];
+        updatedMe.lastSeen = Date.now();
         saveToStorage('cl_users', users);
         setAllUsers(users);
+        if (JSON.stringify(updatedMe.friends) !== JSON.stringify(user.friends)) {
+          setUser({...updatedMe});
+        }
       }
 
       const reqs: FriendRequest[] = getFromStorage('cl_reqs') || [];
-      const myReqs = reqs.filter(r => r.toId === user.id);
-      if (JSON.stringify(myReqs) !== JSON.stringify(friendRequests)) {
-        setFriendRequests(myReqs);
-      }
+      setFriendRequests(reqs.filter(r => r.toId === user.id));
       
       const invites: GroupInvite[] = getFromStorage('cl_group_invites') || [];
-      const myInvites = invites.filter(i => i.toId === user.id);
-      if (JSON.stringify(myInvites) !== JSON.stringify(groupInvites)) {
-        setGroupInvites(myInvites);
-      }
+      setGroupInvites(invites.filter(i => i.toId === user.id));
 
       const allGroups: Group[] = getFromStorage('cl_groups') || [];
       setGroups(allGroups.filter(g => g.members.includes(user.id)));
@@ -138,15 +134,14 @@ export default function App() {
       if (activeGroupId) {
         const msgKey = `cl_msgs_${activeGroupId}`;
         const groupMsgs: Message[] = getFromStorage(msgKey) || [];
-        const now = Date.now();
-        const validMsgs = groupMsgs.filter(m => m.expiresAt > now);
+        const validMsgs = groupMsgs.filter(m => m.expiresAt > Date.now());
         if (JSON.stringify(validMsgs) !== JSON.stringify(messages)) {
           setMessages(validMsgs);
         }
       }
     }, 1500);
     return () => clearInterval(interval);
-  }, [user, activeGroupId, messages, friendRequests, groupInvites]);
+  }, [user, activeGroupId, messages]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -155,12 +150,11 @@ export default function App() {
   const handleSendFriendRequest = () => {
     if (!user || !searchQuery) return;
     const target = allUsers.find(u => u.username === searchQuery);
-    if (!target) { showToast("Korisnik nije pronađen.", 'error'); return; }
+    if (!target) { showToast("Korisnik nije pronađen.", 'err'); return; }
     if (target.id === user.id) return;
     const reqs: FriendRequest[] = getFromStorage('cl_reqs') || [];
     if (reqs.some(r => r.fromId === user.id && r.toId === target.id)) {
-      showToast("Zahtev je već poslat.", 'error');
-      return;
+      showToast("Već poslat zahtev!", 'err'); return;
     }
     const newReq = { id: Math.random().toString(36).substring(2), fromId: user.id, fromUsername: user.username, toId: target.id, timestamp: Date.now() };
     saveToStorage('cl_reqs', [...reqs, newReq]);
@@ -193,26 +187,31 @@ export default function App() {
     const allInvites: GroupInvite[] = getFromStorage('cl_group_invites') || [];
     saveToStorage('cl_group_invites', allInvites.filter(i => i.id !== inv.id));
     setActiveGroupId(inv.groupId);
-    showToast("Ušao si u grupu!");
+    showToast("Ušao u lab sobu!");
   };
 
   const handleCreateGroup = () => {
     if (!newGroupName.trim()) return;
-    const newG = { id: Math.random().toString(36).substring(2,9), name: newGroupName, ownerId: user!.id, members: [user!.id], createdAt: Date.now() };
+    const newG: Group = { id: Math.random().toString(36).substring(2,9), name: newGroupName, ownerId: user!.id, members: [user!.id], createdAt: Date.now(), mutedMembers: [] };
     const all = getFromStorage('cl_groups') || [];
     saveToStorage('cl_groups', [...all, newG]);
-    setShowCreateGroup(false);
     setNewGroupName('');
+    setShowCreateGroup(false);
     setActiveGroupId(newG.id);
-    showToast("Grupa kreirana!");
+    showToast("Soba kreirana!");
   };
 
   const handleSendMessage = (text: string, file?: File) => {
     if (!user || !activeGroupId) return;
+    const group = groups.find(g => g.id === activeGroupId);
+    if (group?.mutedMembers?.includes(user.id)) {
+      showToast("Mutiran si u ovoj sobi!", 'err'); return;
+    }
+    
     let sharedFile: SharedFile | undefined;
     if (file) {
       const limit = PLAN_LIMITS[user.plan];
-      if (file.size > limit) { showToast("Fajl prevelik za tvoj plan!", 'error'); return; }
+      if (file.size > limit) { showToast("Prevelik fajl za tvoj plan!", 'err'); return; }
       sharedFile = { name: file.name, size: file.size, type: file.type, url: URL.createObjectURL(file) };
     }
     const newMessage: Message = {
@@ -230,7 +229,37 @@ export default function App() {
     const existing = getFromStorage(msgKey) || [];
     saveToStorage(msgKey, [...existing, newMessage]);
     setMessages([...existing, newMessage]);
-    if (file) showToast("Fajl je poslat!");
+    if(file) showToast("Fajl poslat!");
+  };
+
+  const handleKickMember = (memberId: string) => {
+    if (!activeGroup || activeGroup.ownerId !== user?.id) return;
+    if (memberId === user.id) return;
+    const allGroups: Group[] = getFromStorage('cl_groups') || [];
+    const gIdx = allGroups.findIndex(g => g.id === activeGroupId);
+    if (gIdx > -1) {
+      allGroups[gIdx].members = allGroups[gIdx].members.filter(id => id !== memberId);
+      saveToStorage('cl_groups', allGroups);
+      showToast("Korisnik izbačen!");
+    }
+  };
+
+  const handleMuteMember = (memberId: string) => {
+    if (!activeGroup || activeGroup.ownerId !== user?.id) return;
+    if (memberId === user.id) return;
+    const allGroups: Group[] = getFromStorage('cl_groups') || [];
+    const gIdx = allGroups.findIndex(g => g.id === activeGroupId);
+    if (gIdx > -1) {
+      const muted = allGroups[gIdx].mutedMembers || [];
+      if (muted.includes(memberId)) {
+        allGroups[gIdx].mutedMembers = muted.filter(id => id !== memberId);
+        showToast("Korisnik odmutiran!");
+      } else {
+        allGroups[gIdx].mutedMembers = [...muted, memberId];
+        showToast("Korisnik mutiran!");
+      }
+      saveToStorage('cl_groups', allGroups);
+    }
   };
 
   const isOnline = (u: User) => u.lastSeen && (Date.now() - u.lastSeen < 10000);
@@ -245,135 +274,121 @@ export default function App() {
       
       {/* GLOBAL TOAST */}
       {toast && (
-        <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[500] px-6 py-3 rounded-2xl font-bold uppercase tracking-widest text-[10px] shadow-2xl animate-in slide-in-from-top-4 ${toast.type === 'error' ? 'bg-red-600 text-white' : 'bg-emerald-600 text-white'}`}>
-          {toast.message}
+        <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[1000] px-6 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-2xl animate-in slide-in-from-top-4 ${toast.t === 'err' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
+          {toast.m}
         </div>
       )}
 
-      {/* SIDEBAR - DUAL COLUMN (FRIENDS | GROUPS) */}
-      <div className="w-[480px] bg-[#0f0f12] border-r border-white/5 flex shrink-0 shadow-2xl z-30">
+      {/* SIDEBAR */}
+      <div className="w-[440px] bg-[#0f0f12] border-r border-white/5 flex shrink-0 shadow-2xl z-30">
         
-        {/* Left Column: Friends */}
-        <div className="w-1/2 border-r border-white/5 flex flex-col h-full">
-          <div className="p-5 border-b border-white/5 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2">
-              <div className="text-indigo-500"><Icons.Users /></div>
-              <span className="font-bold text-[10px] uppercase tracking-[0.2em] text-indigo-400">Prijatelji</span>
-            </div>
-            {/* Inbox Button uvek vidljiv ovde */}
-            <button onClick={() => setShowInbox(!showInbox)} className={`relative p-2 rounded-xl transition-all ${showInbox ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-slate-500'}`}>
+        {/* Left: Friends List */}
+        <div className="w-1/2 border-r border-white/5 flex flex-col h-full bg-[#0d0d0f]">
+          <div className="p-5 border-b border-white/5 flex items-center justify-between">
+            <span className="font-black text-[10px] uppercase tracking-widest text-indigo-400">Prijatelji</span>
+            <button onClick={() => setShowInbox(!showInbox)} className={`p-2 rounded-lg transition-all ${showInbox ? 'bg-indigo-600 text-white scale-110 shadow-[0_0_15px_rgba(99,102,241,0.5)]' : 'bg-white/5 text-slate-500 hover:text-white'}`}>
               <Icons.Mail />
               {(friendRequests.length > 0 || groupInvites.length > 0) && (
-                <div className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-[#0f0f12] animate-pulse"></div>
+                <div className="absolute top-1 right-1 w-2.5 h-2.5 bg-rose-500 rounded-full border-2 border-[#0d0d0f] animate-ping"></div>
               )}
             </button>
           </div>
           <div className="p-4 border-b border-white/5 shrink-0">
             <div className="flex gap-2">
-              <input type="text" placeholder="Traži..." className="flex-1 bg-white/5 border border-white/5 rounded-xl px-3 py-2 text-[10px] outline-none focus:border-indigo-500 transition-all" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
-              <button onClick={handleSendFriendRequest} className="p-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-500 transition-all active:scale-95"><Icons.UserPlus /></button>
+              <input type="text" placeholder="Username..." className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[10px] outline-none focus:border-indigo-500" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+              <button onClick={handleSendFriendRequest} className="p-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 active:scale-95 transition-all"><Icons.UserPlus /></button>
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-1">
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {friendsList.map(f => (
-              <div key={f.id} className="flex items-center gap-3 p-3 rounded-2xl hover:bg-white/5 transition-all group cursor-pointer border border-transparent hover:border-white/5">
+              <div key={f.id} className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition-all group">
                 <div className="relative">
-                  <img src={f.avatar} className="w-9 h-9 rounded-2xl border border-white/10 bg-slate-900 object-cover" />
-                  {isOnline(f) && (
-                    <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#0f0f12] shadow-[0_0_8px_rgba(16,185,129,0.4)]"></div>
-                  )}
+                  <img src={f.avatar} className="w-9 h-9 rounded-lg border border-white/10 bg-black" />
+                  {isOnline(f) && <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#0d0d0f]"></div>}
                 </div>
                 <div className="flex flex-col min-w-0">
-                  <span className="text-[12px] font-bold text-slate-200 truncate">{f.username}</span>
-                  <span className="text-[9px] text-slate-500 font-medium tracking-wide uppercase">{isOnline(f) ? 'Online' : 'Offline'}</span>
+                  <span className="text-[11px] font-black text-slate-200 truncate">{f.username}</span>
+                  <span className="text-[8px] text-slate-600 font-black uppercase">{isOnline(f) ? 'Online' : 'Offline'}</span>
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Right Column: Groups */}
+        {/* Right: Groups List */}
         <div className="w-1/2 flex flex-col h-full bg-[#0a0a0c]">
-          <div className="p-5 border-b border-white/5 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2">
-              <div className="text-emerald-500"><Icons.Video /></div>
-              <span className="font-bold text-[10px] uppercase tracking-[0.2em] text-emerald-400">Lab Sobe</span>
-            </div>
-            <button onClick={() => setShowCreateGroup(true)} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-xl hover:bg-emerald-500 hover:text-white transition-all"><Icons.Plus /></button>
+          <div className="p-5 border-b border-white/5 flex items-center justify-between">
+            <span className="font-black text-[10px] uppercase tracking-widest text-emerald-400">Lab Sobe</span>
+            <button onClick={() => setShowCreateGroup(true)} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-lg hover:bg-emerald-500 hover:text-white transition-all"><Icons.Plus /></button>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {groups.sort((a,b) => a.name === 'My Space' ? -1 : 1).map(g => (
-              <button key={g.id} onClick={() => setActiveGroupId(g.id)} className={`w-full flex items-center gap-3 p-4 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/20 shadow-xl' : 'hover:bg-white/5 border-transparent'}`}>
-                <div className={`w-2 h-2 rounded-full ${g.name === 'My Space' ? 'bg-indigo-400' : 'bg-slate-700'}`}></div>
-                <span className="text-xs font-bold truncate uppercase tracking-widest">{g.name}</span>
+              <button key={g.id} onClick={() => setActiveGroupId(g.id)} className={`w-full flex items-center gap-3 p-4 rounded-xl transition-all border ${activeGroupId === g.id ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/20 shadow-xl' : 'hover:bg-white/5 border-transparent'}`}>
+                <div className={`w-2 h-2 rounded-full ${g.name === 'My Space' ? 'bg-indigo-400 animate-pulse' : 'bg-slate-700'}`}></div>
+                <span className="text-[11px] font-black truncate uppercase tracking-tighter">{g.name}</span>
               </button>
             ))}
           </div>
           
-          <div className="p-5 border-t border-white/5 bg-black/40 shrink-0">
+          {/* User Footer */}
+          <div className="p-4 border-t border-white/5 bg-black/40">
              <div className="flex items-center gap-3">
-               <img src={user.avatar} className="w-10 h-10 rounded-2xl border border-white/5" />
+               <button onClick={() => setShowProfile(true)} className="relative group">
+                 <img src={user.avatar} className="w-10 h-10 rounded-xl border border-white/10 group-hover:border-indigo-500 transition-all" />
+                 <div className="absolute inset-0 bg-indigo-600/20 opacity-0 group-hover:opacity-100 rounded-xl transition-all flex items-center justify-center text-[10px] font-black">EDIT</div>
+               </button>
                <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-black text-white truncate italic uppercase tracking-tighter">{user.username}</p>
-                  <button onClick={() => setShowPlans(true)} className="text-[9px] uppercase font-black text-indigo-500 hover:text-indigo-400 flex items-center gap-1 transition-colors">
-                    <div className="w-1 h-1 bg-indigo-500 rounded-full animate-pulse"></div>
-                    {user.plan} LAB PLAN
-                  </button>
+                  <p className="text-[10px] font-black text-white truncate italic uppercase">{user.username}</p>
+                  <p className="text-[8px] font-black text-indigo-500 uppercase tracking-widest">{user.plan} lab</p>
                </div>
-               <button onClick={() => setUser(null)} className="text-slate-600 hover:text-red-500 p-2 transition-colors"><Icons.LogOut /></button>
+               <button onClick={() => setUser(null)} className="text-slate-600 hover:text-rose-500 p-2"><Icons.LogOut /></button>
              </div>
           </div>
         </div>
       </div>
 
-      {/* MAIN WORKSPACE */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#050505]">
+      {/* MAIN CONTENT */}
+      <div className="flex-1 flex flex-col bg-[#050505]">
         {!activeGroup ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center p-10 opacity-30 select-none">
-             <div className="w-24 h-24 bg-indigo-600/10 text-indigo-500 rounded-[40px] flex items-center justify-center mb-8 border border-indigo-500/10 animate-pulse">
+          <div className="flex-1 flex flex-col items-center justify-center opacity-20">
+             <div className="w-20 h-20 bg-indigo-600/10 text-indigo-500 rounded-3xl flex items-center justify-center mb-6 border border-indigo-500/20 animate-pulse">
                <Icons.Sparkles />
              </div>
-             <h2 className="text-2xl font-black italic text-white uppercase tracking-tighter mb-2">Workspace Inaktivni</h2>
-             <p className="text-xs max-w-xs text-slate-500 leading-relaxed font-medium uppercase tracking-widest">Odaberi ili napravi lab sobu da započneš transfer fajlova i komunikaciju u realnom vremenu.</p>
+             <h2 className="text-xl font-black italic uppercase tracking-widest">Odaberi Workspace</h2>
           </div>
         ) : (
           <>
-            <div className="h-20 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505] z-20 shrink-0">
-               <div className="flex items-center gap-6 min-w-0">
-                  <div className="flex flex-col">
-                    <h2 className="font-black text-lg text-white italic truncate uppercase tracking-tighter">{activeGroup.name}</h2>
-                    <span className="text-[8px] font-bold text-indigo-500 tracking-[0.3em] uppercase">Active Session</span>
+            <div className="h-20 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0">
+               <div className="flex items-center gap-6">
+                  <div>
+                    <h2 className="font-black text-lg text-white italic uppercase tracking-tighter">{activeGroup.name}</h2>
+                    <span className="text-[8px] font-black text-emerald-500 uppercase tracking-[0.3em]">Session Active</span>
                   </div>
-                  <div className="h-6 w-[1px] bg-white/10 mx-2"></div>
-                  <div className="flex -space-x-2 overflow-hidden">
-                    {activeMembers.slice(0, 4).map(m => (
-                      <img key={m.id} src={m.avatar} className="w-7 h-7 rounded-xl border-2 border-[#050505] bg-slate-900" title={m.username} />
+                  <div className="h-8 w-[1px] bg-white/10 mx-2"></div>
+                  <div className="flex -space-x-2">
+                    {activeMembers.slice(0, 5).map(m => (
+                      <img key={m.id} src={m.avatar} className="w-8 h-8 rounded-lg border-2 border-[#050505] bg-black" />
                     ))}
-                    {activeMembers.length > 4 && <div className="w-7 h-7 rounded-xl bg-indigo-900 flex items-center justify-center text-[9px] font-black border-2 border-[#050505] text-white">+{activeMembers.length-4}</div>}
                   </div>
-                  <button onClick={() => setShowAbout(true)} className="text-[9px] bg-white/5 px-3 py-1.5 rounded-xl uppercase font-black tracking-widest hover:bg-white/10 border border-white/5 transition-all active:scale-95">About</button>
+                  <button onClick={() => setShowAbout(true)} className="text-[9px] bg-white/5 px-4 py-2 rounded-lg uppercase font-black tracking-widest hover:bg-indigo-600 transition-all">Members & Tools</button>
                </div>
-               
                <div className="flex items-center gap-4">
                   {activeGroup.ownerId === user.id && activeGroup.name !== 'My Space' && (
-                    <button onClick={() => setShowInviteMenu(!showInviteMenu)} className="bg-indigo-600 text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-all active:scale-95 shadow-lg shadow-indigo-600/20">Pozovi Tim</button>
+                    <button onClick={() => setShowInviteMenu(true)} className="bg-indigo-600 text-white px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 shadow-xl shadow-indigo-600/20 active:scale-95 transition-all">Invite</button>
                   )}
                </div>
             </div>
 
             <div className="flex-1 flex overflow-hidden">
-              {/* CHAT PANEL */}
-              <div className="flex-1 flex flex-col border-r border-white/5 bg-[#050505]">
+              {/* CHAT */}
+              <div className="flex-1 flex flex-col border-r border-white/5">
                 <div className="flex-1 overflow-y-auto p-8 space-y-6">
                   {messages.filter(m => m.type === 'text').map(msg => (
-                    <div key={msg.id} className={`flex gap-4 ${msg.senderId === user.id ? 'flex-row-reverse' : ''} animate-in fade-in slide-in-from-bottom-2 duration-300`}>
-                      <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-xl bg-slate-900 shrink-0 border border-white/10" alt="" />
-                      <div className={`flex flex-col max-w-[75%] ${msg.senderId === user.id ? 'items-end' : ''}`}>
-                        <div className="flex items-center gap-2 mb-1.5 px-1">
-                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">{msg.senderName}</span>
-                          <span className="text-[8px] text-slate-700 font-bold">{new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                        </div>
-                        <div className={`p-4 rounded-[24px] text-xs leading-relaxed shadow-sm ${msg.senderId === user.id ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-[#121216] border border-white/5 text-slate-200 rounded-tl-none'}`}>
+                    <div key={msg.id} className={`flex gap-4 ${msg.senderId === user.id ? 'flex-row-reverse' : ''}`}>
+                      <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-9 h-9 rounded-lg bg-black shrink-0 border border-white/10" />
+                      <div className={`flex flex-col max-w-[70%] ${msg.senderId === user.id ? 'items-end' : ''}`}>
+                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5 px-1">{msg.senderName}</span>
+                        <div className={`p-4 rounded-2xl text-sm leading-relaxed ${msg.senderId === user.id ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-[#121216] border border-white/5 text-slate-200 rounded-tl-none'}`}>
                           {msg.text}
                         </div>
                       </div>
@@ -381,24 +396,24 @@ export default function App() {
                   ))}
                   <div ref={chatEndRef} />
                 </div>
-                <div className="p-6 border-t border-white/5 bg-[#050505]">
-                  <ChatInput onSend={handleSendMessage} />
+                <div className="p-6 border-t border-white/5">
+                  <ChatInput onSend={handleSendMessage} disabled={activeGroup.mutedMembers?.includes(user.id)} />
                 </div>
               </div>
 
-              {/* FILE GALLERY */}
-              <div className="w-[340px] bg-[#0a0a0c] flex flex-col shrink-0">
-                <div className="p-6 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#0a0a0c]/80 backdrop-blur-md">
-                  <div className="flex flex-col">
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Asset Lab</span>
-                    <span className="text-[8px] font-bold text-slate-700">1H EPHEMERAL STORAGE</span>
+              {/* ASSET LAB */}
+              <div className="w-[360px] bg-[#0a0a0c] flex flex-col">
+                <div className="p-6 border-b border-white/5 flex items-center justify-between shrink-0">
+                  <div>
+                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest block">Asset Lab</span>
+                    <span className="text-[8px] font-black text-rose-500 uppercase animate-pulse">Auto-delete 1H</span>
                   </div>
-                  <input type="file" id="file-up" className="hidden" onChange={e => { if(e.target.files?.[0]) handleSendMessage('', e.target.files[0]); e.target.value=''; }} />
-                  <label htmlFor="file-up" className="p-3 bg-indigo-600 text-white rounded-2xl cursor-pointer hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-600/10 active:scale-95"><Icons.Paperclip /></label>
+                  <input type="file" id="lab-up" className="hidden" onChange={e => { if(e.target.files?.[0]) handleSendMessage('', e.target.files[0]); e.target.value=''; }} />
+                  <label htmlFor="lab-up" className="p-3 bg-indigo-600 text-white rounded-xl cursor-pointer hover:bg-indigo-500 transition-all"><Icons.Paperclip /></label>
                 </div>
-                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                <div className="flex-1 overflow-y-auto p-5 space-y-5">
                   {messages.filter(m => m.type === 'file').map(msg => (
-                    <FileItem key={msg.id} file={msg.file!} sender={msg.senderName} time={msg.timestamp} expiresAt={msg.expiresAt} />
+                    <FileItem key={msg.id} file={msg.file!} sender={msg.senderName} time={msg.timestamp} expiresAt={msg.expiresAt} onPreview={() => setSelectedFile(msg.file!)} />
                   ))}
                 </div>
               </div>
@@ -407,118 +422,169 @@ export default function App() {
         )}
       </div>
 
-      {/* RIGHT INBOX DRAWER */}
+      {/* MODALS SECTION */}
+
+      {/* INBOX MODAL */}
       {showInbox && (
-        <div className="w-96 bg-[#0f0f12] border-l border-white/10 flex flex-col shrink-0 shadow-[-20px_0_50px_rgba(0,0,0,0.8)] z-[100] animate-in slide-in-from-right duration-400">
-           <div className="p-8 border-b border-white/5 flex items-center justify-between shrink-0">
-              <div className="flex flex-col">
-                <span className="font-black text-sm uppercase text-white italic tracking-tighter">Inboks Obaveštenja</span>
-                <span className="text-[9px] font-bold text-indigo-500 uppercase tracking-widest">Timski Zahtevi</span>
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6" onClick={() => setShowInbox(false)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-2xl w-full max-w-sm p-8 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-8">
+                 <h3 className="font-black italic text-xl uppercase tracking-tighter text-white">Inbox</h3>
+                 <button onClick={() => setShowInbox(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
               </div>
-              <button onClick={() => setShowInbox(false)} className="p-2 hover:bg-white/5 rounded-xl text-slate-500 hover:text-white transition-all"><Icons.X /></button>
+              <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
+                 {friendRequests.length === 0 && groupInvites.length === 0 && <p className="text-center py-10 opacity-20 text-[10px] uppercase font-black italic">Sve čisto.</p>}
+                 {friendRequests.map(req => (
+                   <div key={req.id} className="bg-indigo-600/5 border border-indigo-500/20 p-4 rounded-xl space-y-3">
+                     <p className="text-[11px] font-bold"><span className="text-indigo-400">{req.fromUsername}</span> ti šalje zahtev!</p>
+                     <div className="flex gap-2">
+                       <button onClick={() => handleAcceptRequest(req)} className="flex-1 py-2 bg-indigo-600 text-white rounded-lg text-[10px] font-black uppercase tracking-widest">Prihvati</button>
+                       <button onClick={() => {
+                          const all = getFromStorage('cl_reqs') || [];
+                          saveToStorage('cl_reqs', all.filter((r:any) => r.id !== req.id));
+                       }} className="p-2 bg-white/5 rounded-lg text-slate-500 hover:text-rose-500"><Icons.X /></button>
+                     </div>
+                   </div>
+                 ))}
+                 {groupInvites.map(inv => (
+                   <div key={inv.id} className="bg-emerald-600/5 border border-emerald-500/20 p-4 rounded-xl space-y-3">
+                     <p className="text-[11px] font-bold">Pozvan si u <span className="text-emerald-400">{inv.groupName}</span>!</p>
+                     <button onClick={() => handleAcceptInvite(inv)} className="w-full py-2 bg-emerald-600 text-white rounded-lg text-[10px] font-black uppercase tracking-widest italic">Uđi u Lab</button>
+                   </div>
+                 ))}
+              </div>
            </div>
-           <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              {friendRequests.length === 0 && groupInvites.length === 0 && (
-                <div className="text-center py-32 opacity-20 flex flex-col items-center italic text-[10px] uppercase tracking-widest select-none font-bold">
-                  <div className="mb-4"><Icons.Mail /></div>
-                  Mirno je ovde...
+        </div>
+      )}
+
+      {/* PROFILE MODAL */}
+      {showProfile && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-6" onClick={() => setShowProfile(false)}>
+           <div className="bg-[#0f0f12] border border-indigo-500/30 rounded-2xl w-full max-w-sm p-10 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-indigo-500 via-emerald-500 to-rose-500"></div>
+              <div className="text-center mb-8">
+                <img src={user.avatar} className="w-24 h-24 rounded-2xl mx-auto border-4 border-white/5 mb-4 shadow-2xl bg-black" />
+                <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">{user.username}</h3>
+                <span className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.4em]">{user.plan} account</span>
+              </div>
+              <div className="space-y-6">
+                <div>
+                   <label className="text-[10px] font-black text-slate-600 uppercase tracking-widest block mb-2 px-1">Avatar Seed</label>
+                   <div className="flex gap-2">
+                     <input type="text" className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm outline-none focus:border-indigo-500 text-white" defaultValue={user.username} 
+                       onChange={(e) => {
+                         const users = getFromStorage('cl_users') || [];
+                         const me = users.find((u:any) => u.id === user.id);
+                         if(me) {
+                            me.avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${e.target.value}`;
+                            saveToStorage('cl_users', users);
+                            setUser({...me});
+                         }
+                       }} 
+                     />
+                   </div>
                 </div>
-              )}
-              {friendRequests.map(req => (
-                <div key={req.id} className="bg-indigo-600/5 border border-indigo-500/10 p-5 rounded-3xl space-y-4 group transition-all hover:border-indigo-500/30">
-                  <div className="flex items-center gap-3">
-                    <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${req.fromUsername}`} className="w-8 h-8 rounded-xl bg-slate-900" />
-                    <div className="flex flex-col">
-                      <span className="text-[11px] font-black text-white">{req.fromUsername}</span>
-                      <span className="text-[9px] font-bold text-slate-500 uppercase tracking-tighter">Želi da se poveže</span>
-                    </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-white/5 p-4 rounded-xl text-center">
+                    <p className="text-lg font-black text-white">{user.friends.length}</p>
+                    <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Prijatelja</p>
                   </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => handleAcceptRequest(req)} className="flex-1 py-2.5 bg-indigo-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-600/10">Prihvati</button>
-                    <button onClick={() => {
-                       const all = getFromStorage('cl_reqs') || [];
-                       saveToStorage('cl_reqs', all.filter((r:any) => r.id !== req.id));
-                    }} className="px-4 py-2.5 bg-white/5 rounded-xl text-slate-400 hover:text-red-500 transition-all"><Icons.X /></button>
+                  <div className="bg-white/5 p-4 rounded-xl text-center">
+                    <p className="text-lg font-black text-white">{groups.length}</p>
+                    <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Lab Grupa</p>
                   </div>
                 </div>
-              ))}
-              {groupInvites.map(inv => (
-                <div key={inv.id} className="bg-emerald-500/5 border border-emerald-500/10 p-5 rounded-3xl space-y-4 group transition-all hover:border-emerald-500/30">
-                  <div className="flex flex-col">
-                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em] mb-1">Poziv Za Lab</span>
-                    <span className="text-sm font-black text-white italic truncate">{inv.groupName}</span>
-                    <span className="text-[10px] font-medium text-emerald-400 mt-1">od {inv.fromUsername}</span>
+                <button onClick={() => setShowPlans(true)} className="w-full py-4 bg-white text-black rounded-xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all">Upgrade Plan</button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* ABOUT MODAL (OWNER TOOLS) */}
+      {showAbout && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[200] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-2xl w-full max-w-sm p-10 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-10">
+                 <h3 className="font-black italic text-xl uppercase tracking-tighter text-white">Lab Members</h3>
+                 <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
+              </div>
+              <div className="space-y-4 max-h-96 overflow-y-auto pr-2">
+                {activeMembers.map(m => (
+                  <div key={m.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10 transition-all group">
+                     <div className="flex items-center gap-3">
+                        <img src={m.avatar} className="w-10 h-10 rounded-lg border border-white/10 bg-black" />
+                        <div className="flex flex-col">
+                           <span className="text-[12px] font-black text-slate-200">{m.username} {m.id === activeGroup?.ownerId && '👑'}</span>
+                           <span className={`text-[8px] font-black uppercase tracking-widest ${isOnline(m) ? 'text-emerald-500' : 'text-slate-700'}`}>{isOnline(m) ? 'Active' : 'Away'}</span>
+                        </div>
+                     </div>
+                     {activeGroup?.ownerId === user.id && m.id !== user.id && (
+                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                         <button onClick={() => handleMuteMember(m.id)} className={`p-2 rounded-lg transition-all ${activeGroup?.mutedMembers?.includes(m.id) ? 'bg-amber-600 text-white' : 'bg-white/5 text-amber-500 hover:bg-amber-500 hover:text-white'}`} title="Mute/Unmute">
+                           M
+                         </button>
+                         <button onClick={() => handleKickMember(m.id)} className="p-2 bg-white/5 text-rose-500 hover:bg-rose-500 hover:text-white rounded-lg transition-all" title="Kick">
+                           K
+                         </button>
+                       </div>
+                     )}
                   </div>
-                  <button onClick={() => handleAcceptInvite(inv)} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-600/10 italic">Uđi u Workspace</button>
-                </div>
-              ))}
+                ))}
+              </div>
            </div>
         </div>
       )}
 
       {/* CREATE GROUP MODAL */}
       {showCreateGroup && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-[400] flex items-center justify-center p-6 animate-in fade-in duration-300" onClick={() => setShowCreateGroup(false)}>
-          <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-sm p-10 shadow-2xl relative" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-8">
-              <div className="flex flex-col">
-                <h3 className="font-black italic text-2xl uppercase tracking-tighter text-white">Nova Lab Soba</h3>
-                <span className="text-[9px] font-black text-emerald-500 tracking-[0.3em] uppercase">Kreiraj Workspace</span>
-              </div>
-              <button onClick={() => setShowCreateGroup(false)} className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all"><Icons.X /></button>
-            </div>
-            <div className="space-y-6">
-              <input 
-                type="text" 
-                placeholder="Ime Grupe..." 
-                className="w-full bg-white/5 border border-white/5 rounded-2xl px-5 py-4 text-sm outline-none focus:border-emerald-500 transition-all text-white font-bold"
-                value={newGroupName}
-                onChange={e => setNewGroupName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleCreateGroup()}
-              />
-              <button 
-                onClick={handleCreateGroup}
-                className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-emerald-500 transition-all shadow-lg shadow-emerald-600/20"
-              >
-                Kreiraj Sobu
-              </button>
-            </div>
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[500] flex items-center justify-center p-6" onClick={() => setShowCreateGroup(false)}>
+          <div className="bg-[#0f0f12] border border-white/10 p-10 rounded-2xl w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+             <h3 className="text-xl font-black text-white italic uppercase tracking-tighter mb-8">Nova Soba</h3>
+             <div className="space-y-4">
+               <input type="text" placeholder="Ime grupe..." className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-emerald-500 outline-none text-white font-bold" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreateGroup()} />
+               <button onClick={handleCreateGroup} className="w-full py-4 bg-emerald-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-emerald-500 shadow-xl shadow-emerald-600/20 active:scale-95 transition-all">Create Workspace</button>
+             </div>
           </div>
         </div>
       )}
 
-      {/* ABOUT MODAL */}
-      {showAbout && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-[200] flex items-center justify-center p-6 animate-in fade-in duration-300" onClick={() => setShowAbout(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 rounded-[48px] w-full max-sm p-10 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="flex justify-between items-center mb-8 relative z-10">
-                 <h3 className="font-black italic text-2xl uppercase tracking-tighter text-white">Lab Info</h3>
-                 <button onClick={() => setShowAbout(false)} className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-all"><Icons.X /></button>
-              </div>
-              <div className="space-y-8 relative z-10">
-                <div>
-                  <p className="text-[10px] font-black text-slate-600 uppercase tracking-widest mb-4">Timski Članovi</p>
-                  <div className="space-y-3">
-                    {activeMembers.map(m => (
-                      <div key={m.id} className="flex items-center justify-between p-2 rounded-2xl">
-                         <div className="flex items-center gap-4">
-                           <img src={m.avatar} className="w-8 h-8 rounded-xl bg-slate-900 border border-white/5" />
-                           <span className="text-[11px] font-black text-slate-200">{m.username}</span>
-                         </div>
-                         <div className={`w-2 h-2 rounded-full ${isOnline(m) ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-slate-800'}`}></div>
-                      </div>
-                    ))}
-                  </div>
+      {/* FILE PREVIEW MODAL */}
+      {selectedFile && (
+        <div className="fixed inset-0 bg-black/95 z-[1000] flex flex-col items-center justify-center p-10" onClick={() => setSelectedFile(null)}>
+           <button onClick={() => setSelectedFile(null)} className="absolute top-10 right-10 p-4 bg-white/5 text-white rounded-full hover:bg-rose-600 transition-all"><Icons.X /></button>
+           <div className="max-w-4xl w-full max-h-[80vh] flex items-center justify-center rounded-2xl overflow-hidden shadow-2xl border border-white/10" onClick={e => e.stopPropagation()}>
+              {selectedFile.type.startsWith('image/') && <img src={selectedFile.url} className="max-w-full max-h-full object-contain" />}
+              {selectedFile.type.startsWith('video/') && <video src={selectedFile.url} className="max-w-full max-h-full" controls autoPlay />}
+              {selectedFile.type.startsWith('audio/') && (
+                <div className="bg-[#121216] p-10 rounded-2xl w-full max-w-md text-center">
+                  <div className="mb-6"><Icons.Video /></div>
+                  <p className="text-white font-black mb-6 uppercase tracking-widest">{selectedFile.name}</p>
+                  <audio src={selectedFile.url} className="w-full" controls autoPlay />
                 </div>
-              </div>
+              )}
+              {!selectedFile.type.startsWith('image/') && !selectedFile.type.startsWith('video/') && !selectedFile.type.startsWith('audio/') && (
+                <div className="bg-[#121216] p-20 rounded-2xl text-center">
+                  <div className="mb-6 scale-150"><Icons.File /></div>
+                  <p className="text-white font-black uppercase mb-8">{selectedFile.name}</p>
+                  <a href={selectedFile.url} download={selectedFile.name} className="bg-indigo-600 px-8 py-3 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-500">Download File</a>
+                </div>
+              )}
+           </div>
+           <div className="mt-8 text-center">
+             <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest">Lab Preview Mod</p>
            </div>
         </div>
       )}
 
+      {/* PLANS MODAL */}
       {showPlans && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-2xl z-[300] flex items-center justify-center p-6" onClick={() => setShowPlans(false)}>
-          <div className="bg-[#0f0f12] border border-white/5 rounded-[56px] w-full max-w-4xl p-16 shadow-2xl relative overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="grid md:grid-cols-3 gap-10">
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[600] flex items-center justify-center p-6" onClick={() => setShowPlans(false)}>
+          <div className="bg-[#0f0f12] border border-white/5 rounded-3xl w-full max-w-4xl p-16 shadow-2xl relative" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-16">
+              <h3 className="text-3xl font-black text-white italic uppercase tracking-tighter">Lab Upgrade</h3>
+              <button onClick={() => setShowPlans(false)} className="p-4 hover:bg-white/5 rounded-xl"><Icons.X /></button>
+            </div>
+            <div className="grid md:grid-cols-3 gap-8">
               <PlanCard title="Free" price="0" limit="10MB" current={user.plan === 'free'} onSelect={() => setUser({...user, plan: 'free'})} />
               <PlanCard title="Pro" price="9" limit="30MB" highlight current={user.plan === 'pro'} onSelect={() => setUser({...user, plan: 'pro'})} />
               <PlanCard title="Premium" price="19" limit="100MB" current={user.plan === 'premium'} onSelect={() => setUser({...user, plan: 'premium'})} />
@@ -526,45 +592,22 @@ export default function App() {
           </div>
         </div>
       )}
-
-      {showInviteMenu && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[200] flex items-center justify-center p-6" onClick={() => setShowInviteMenu(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-xs p-10 shadow-2xl" onClick={e => e.stopPropagation()}>
-              <div className="flex justify-between items-center mb-6">
-                 <h4 className="text-[12px] font-black uppercase text-white tracking-widest italic">Invite Friends</h4>
-                 <button onClick={() => setShowInviteMenu(false)} className="text-slate-500"><Icons.X /></button>
-              </div>
-              <div className="max-h-64 overflow-y-auto space-y-2 pr-2">
-                {friendsList.filter(f => !activeGroup?.members?.includes(f.id)).map(f => (
-                  <button key={f.id} onClick={() => {
-                    const all = getFromStorage('cl_group_invites') || [];
-                    saveToStorage('cl_group_invites', [...all, { id: Math.random().toString(36).substring(2), groupId: activeGroup!.id, groupName: activeGroup!.name, fromUsername: user.username, toId: f.id }]);
-                    setShowInviteMenu(false); showToast("Poziv poslat!");
-                  }} className="w-full flex items-center gap-3 p-3 hover:bg-indigo-600/10 border border-transparent hover:border-indigo-500/20 rounded-2xl text-[12px] font-bold group transition-all">
-                    <img src={f.avatar} className="w-8 h-8 rounded-xl border border-white/10 group-hover:scale-105 transition-transform" /> 
-                    <span className="truncate">{f.username}</span>
-                  </button>
-                ))}
-              </div>
-           </div>
-        </div>
-      )}
     </div>
   );
 }
 
-const ChatInput: React.FC<{ onSend: (t: string) => void }> = ({ onSend }) => {
+const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean }> = ({ onSend, disabled }) => {
   const [text, setText] = useState('');
-  const handleSend = () => { if(text.trim()) { onSend(text); setText(''); } };
+  const handleSend = () => { if(text.trim() && !disabled) { onSend(text); setText(''); } };
   return (
-    <div className="flex items-end gap-3 bg-[#0f0f12] border border-white/5 rounded-[28px] p-3 focus-within:border-indigo-500/40 transition-all shadow-inner">
-      <textarea rows={1} value={text} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder="Piši ovde..." className="flex-1 bg-transparent py-3 px-5 text-sm outline-none resize-none text-white placeholder:text-slate-700 font-medium" />
-      <button onClick={handleSend} className={`p-4 rounded-2xl transition-all shadow-lg active:scale-95 ${text.trim() ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700 cursor-not-allowed'}`}><Icons.Send /></button>
+    <div className={`flex items-end gap-3 bg-[#0f0f12] border border-white/10 rounded-2xl p-3 focus-within:border-indigo-500/50 transition-all ${disabled ? 'opacity-50 grayscale' : ''}`}>
+      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "Mutiran si u ovoj sobi..." : "Pošalji poruku tvojim saradnicima..."} className="flex-1 bg-transparent py-3 px-4 text-sm outline-none resize-none text-white placeholder:text-slate-700 font-medium" />
+      <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-4 rounded-xl transition-all shadow-lg active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700 cursor-not-allowed'}`}><Icons.Send /></button>
     </div>
   );
 };
 
-const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expiresAt: number }> = ({ file, sender, time, expiresAt }) => {
+const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expiresAt: number, onPreview: () => void }> = ({ file, sender, time, expiresAt, onPreview }) => {
   const [timeLeft, setTimeLeft] = useState(Math.round((expiresAt - Date.now()) / 1000 / 60));
   useEffect(() => {
     const timer = setInterval(() => setTimeLeft(Math.max(0, Math.round((expiresAt - Date.now()) / 1000 / 60))), 30000);
@@ -573,25 +616,36 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expir
 
   const isImg = file.type.startsWith('image/');
   const isVid = file.type.startsWith('video/');
+  const isAud = file.type.startsWith('audio/');
 
   return (
-    <div className="bg-[#121216] border border-white/5 rounded-3xl overflow-hidden shadow-2xl group relative animate-in zoom-in-95 duration-300">
-      <div className="absolute top-3 left-3 z-10 bg-indigo-600 px-3 py-1.5 rounded-xl text-[9px] font-black text-white border border-indigo-400/30 shadow-xl uppercase tracking-tighter">
+    <div className="bg-[#121216] border border-white/5 rounded-2xl overflow-hidden shadow-xl group relative border-l-4 border-l-indigo-600 animate-in zoom-in-95">
+      <div className="absolute top-3 right-3 z-10 bg-indigo-600/90 backdrop-blur-md px-3 py-1.5 rounded-lg text-[8px] font-black text-white uppercase tracking-widest border border-indigo-400/20">
         {timeLeft}m left
       </div>
-      {isImg && <div className="aspect-video bg-black"><img src={file.url} className="w-full h-full object-cover" /></div>}
-      {isVid && <div className="aspect-video bg-black flex items-center justify-center"><video src={file.url} className="w-full h-full object-contain" controls /></div>}
-      {!isImg && !isVid && <div className="h-32 bg-indigo-900/10 flex items-center justify-center text-indigo-500 border-b border-white/5"><Icons.File /></div>}
-      <div className="p-5">
-        <div className="flex items-start justify-between gap-3 mb-4">
+      
+      {/* Visual Preview in card */}
+      <div className="cursor-pointer overflow-hidden aspect-video bg-black flex items-center justify-center relative" onClick={onPreview}>
+         {isImg && <img src={file.url} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />}
+         {isVid && <video src={file.url} className="w-full h-full object-contain pointer-events-none" />}
+         {isAud && <div className="text-indigo-500 scale-150"><Icons.Video /></div>}
+         {!isImg && !isVid && !isAud && <div className="text-slate-700 scale-150"><Icons.File /></div>}
+         <div className="absolute inset-0 bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+            <span className="text-[10px] font-black text-white uppercase tracking-[0.3em] bg-black/60 px-4 py-2 rounded-full border border-white/10 shadow-2xl">Preview Asset</span>
+         </div>
+      </div>
+
+      <div className="p-4">
+        <div className="flex items-start justify-between gap-3 mb-1">
            <div className="min-w-0">
-              <p className="text-[11px] font-black text-white truncate uppercase tracking-tight">{file.name}</p>
+              <p className="text-[11px] font-black text-white truncate uppercase tracking-tighter">{file.name}</p>
               <div className="flex items-center gap-2 mt-1">
-                <span className="text-[9px] font-black text-indigo-500 uppercase tracking-tighter">{(file.size / 1024 / 1024).toFixed(1)}MB</span>
-                <span className="text-[9px] text-slate-500 font-bold uppercase truncate">• {sender}</span>
+                <span className="text-[9px] font-black text-indigo-500 uppercase">{(file.size / 1024 / 1024).toFixed(1)}MB</span>
+                <span className="text-[9px] text-slate-700 font-bold">•</span>
+                <span className="text-[9px] text-slate-500 font-bold uppercase truncate">{sender}</span>
               </div>
            </div>
-           <a href={file.url} download={file.name} className="p-3 bg-white/5 text-slate-400 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all border border-white/5 active:scale-95"><Icons.Download /></a>
+           <a href={file.url} download={file.name} className="p-3 bg-white/5 text-slate-400 rounded-xl hover:bg-indigo-600 hover:text-white transition-all border border-white/5 active:scale-95"><Icons.Download /></a>
         </div>
       </div>
     </div>
@@ -599,15 +653,15 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, time: number, expir
 };
 
 const PlanCard = ({ title, price, limit, highlight, current, onSelect }: any) => (
-  <div className={`p-10 rounded-[56px] border-2 transition-all flex flex-col relative group ${highlight ? 'border-indigo-600 bg-indigo-600/5 shadow-[0_0_80px_rgba(99,102,241,0.15)] scale-105 z-10' : 'border-white/5 bg-white/5 hover:border-white/10'}`}>
-    {highlight && <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest italic shadow-xl">Preporučeno</div>}
+  <div className={`p-10 rounded-2xl border-2 transition-all flex flex-col relative ${highlight ? 'border-indigo-600 bg-indigo-600/5 shadow-2xl scale-105 z-10' : 'border-white/5 bg-white/5 hover:border-white/10'}`}>
+    {highlight && <div className="absolute -top-4 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest italic">Best For Labs</div>}
     <h4 className="text-xl font-black text-white mb-2 italic uppercase tracking-tighter">{title}</h4>
-    <div className="text-5xl font-black text-white mb-10 tracking-tighter">${price}<span className="text-sm text-slate-700 font-normal ml-1 italic">/mo</span></div>
-    <ul className="space-y-5 mb-12 flex-1 text-xs text-slate-400 font-medium">
-      <li className="flex items-center gap-3"><div className="text-indigo-500 shrink-0"><Icons.Check /></div> {limit} Max File Size</li>
-      <li className="flex items-center gap-3"><div className="text-indigo-500 shrink-0"><Icons.Check /></div> Real-time Timski Lab</li>
-      <li className="flex items-center gap-3"><div className="text-indigo-500 shrink-0"><Icons.Check /></div> Ephemeral 1H Storage</li>
+    <div className="text-5xl font-black text-white mb-10 tracking-tighter">${price}<span className="text-sm text-slate-700 font-normal ml-1">/mo</span></div>
+    <ul className="space-y-4 mb-10 flex-1 text-xs text-slate-400 font-medium">
+      <li className="flex items-center gap-3"><div className="text-indigo-500"><Icons.Check /></div> {limit} Max File</li>
+      <li className="flex items-center gap-3"><div className="text-indigo-500"><Icons.Check /></div> Ephemeral Storage</li>
+      <li className="flex items-center gap-3"><div className="text-indigo-500"><Icons.Check /></div> Real-time Team Chat</li>
     </ul>
-    <button onClick={onSelect} disabled={current} className={`w-full py-5 rounded-[28px] font-black uppercase tracking-widest transition-all ${current ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 shadow-inner' : highlight ? 'bg-indigo-600 text-white hover:bg-indigo-500 shadow-xl shadow-indigo-600/30' : 'bg-white text-black hover:bg-slate-200'}`}>{current ? 'Aktivan Plan' : 'Aktiviraj'}</button>
+    <button onClick={onSelect} disabled={current} className={`w-full py-4 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all ${current ? 'bg-indigo-600/20 text-indigo-400' : 'bg-white text-black hover:bg-slate-200'}`}>{current ? 'Active' : 'Get Started'}</button>
   </div>
 );
