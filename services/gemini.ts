@@ -1,7 +1,8 @@
 
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+// Fix: Initialized GoogleGenAI strictly following the provided guidelines (using process.env.API_KEY directly)
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export async function getFeedbackOnMessage(message: string, context: string = "") {
   try {
