@@ -57,7 +57,7 @@ const safeClearUrl = () => {
   } catch (e) {}
 };
 
-// --- Components ---
+// --- Auth Page Component ---
 
 const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }> = ({ onAuth }) => {
   const params = new URLSearchParams(window.location.search);
@@ -104,9 +104,9 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
     if (mode === 'login') {
       const user = users.find((u) => u.email === email || u.username === email);
       if (user) onAuth(user, roomToJoin || undefined);
-      else alert('Korisnik nije pronađen');
+      else alert('User not found');
     } else {
-      if (users.some(u => u.username === username)) { alert("Username zauzet!"); return; }
+      if (users.some(u => u.username === username)) { alert("Username taken!"); return; }
       const newUser: User = { id: Math.random().toString(36).substring(2, 9), email, username, avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`, plan: 'free', friends: [], chatColor: CHAT_COLORS[0] };
       users.push(newUser);
       saveToStorage('cl_users', users);
@@ -161,6 +161,8 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
   );
 };
 
+// --- Main App Component ---
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -174,6 +176,7 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState<SharedFile | null>(null);
   const [lastSentTime, setLastSentTime] = useState(0);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -185,7 +188,7 @@ export default function App() {
 
   const isOnline = (u: User | string) => {
     const target = typeof u === 'string' ? allUsers.find(au => au.id === u) : u;
-    return target?.lastSeen && (Date.now() - target.lastSeen < 12000);
+    return target?.lastSeen && (Date.now() - target.lastSeen < 15000);
   };
 
   const fetchData = () => {
@@ -193,7 +196,7 @@ export default function App() {
     const users: User[] = getFromStorage('cl_users') || [];
     const allGroups: Group[] = getFromStorage('cl_groups') || [];
     
-    // Ensure "Live Hub" exists
+    // Auto-create Live Hub
     if (!allGroups.some(g => g.id === 'live-space')) {
        allGroups.push({ id: 'live-space', name: 'Live Hub', ownerId: 'system', members: [], createdAt: Date.now() });
        saveToStorage('cl_groups', allGroups);
@@ -205,19 +208,19 @@ export default function App() {
     if (activeGroupId) {
       const msgKey = `cl_msgs_${activeGroupId}`;
       const groupMsgs: Message[] = getFromStorage(msgKey) || [];
-      const filtered = groupMsgs.filter(m => m.type === 'system' || isOnline(m.senderId));
-      
-      setMessages(filtered);
-      setOptimisticMessages(prev => prev.filter(om => !filtered.some(fm => fm.id === om.id)));
+      // SYNC FIX: We do NOT filter by online status for displaying history.
+      // Everyone who is a member sees the history.
+      setMessages(groupMsgs);
+      setOptimisticMessages(prev => prev.filter(om => !groupMsgs.some(fm => fm.id === om.id)));
     }
   };
 
-  // Immediate clear and fetch on group switch
   const handleSwitchGroup = (id: string) => {
     if (activeGroupId === id) return;
     setMessages([]);
     setOptimisticMessages([]);
     setReplyingTo(null);
+    setEditingMessage(null);
     setActiveGroupId(id);
   };
 
@@ -228,7 +231,7 @@ export default function App() {
   useEffect(() => {
     const sync = (e: StorageEvent) => fetchData();
     window.addEventListener('storage', sync);
-    const interval = setInterval(fetchData, 1500);
+    const interval = setInterval(fetchData, 1000); // 1s polling for better feel
     return () => {
       window.removeEventListener('storage', sync);
       clearInterval(interval);
@@ -249,20 +252,18 @@ export default function App() {
   }, [user]);
 
   const activeGroup = useMemo(() => groups.find(g => g.id === activeGroupId), [groups, activeGroupId]);
-
   const usersInCall = useMemo(() => {
     if (!activeGroup || !activeGroup.inCall) return [];
     return allUsers.filter(u => activeGroup.inCall!.includes(u.id));
   }, [activeGroup, allUsers]);
 
   const handleAuthSuccess = (u: User, autoGroupId?: string) => {
-    setUser(u);
-    // Refresh user list with the new/logged-in user
     const users: User[] = getFromStorage('cl_users') || [];
     if (!users.some(existing => existing.id === u.id)) {
       users.push(u);
       saveToStorage('cl_users', users);
     }
+    setUser(u);
 
     if (autoGroupId) {
       const all: Group[] = getFromStorage('cl_groups') || [];
@@ -271,10 +272,9 @@ export default function App() {
         if (!all[gIdx].members.includes(u.id)) {
           all[gIdx].members.push(u.id);
           saveToStorage('cl_groups', all);
-          sendSystemMessage(autoGroupId, `${u.username} has entered the lab.`);
+          sendSystemMessage(autoGroupId, `${u.username} joined the lab.`);
         }
         setActiveGroupId(autoGroupId);
-        setGroups(all.filter((g:any) => g.members.includes(u.id) || g.id === 'live-space'));
         safeClearUrl();
       } else { 
         showToast("Lab not found!", 'err'); 
@@ -294,7 +294,17 @@ export default function App() {
 
   const handleSendMessage = async (text: string, file?: File) => {
     if (!user || !activeGroupId) return;
-    if (activeGroupId === 'live-space' && Date.now() - lastSentTime < 1000) { showToast("1s cooldown.", 'err'); return; }
+    
+    // Mute check
+    if (activeGroup?.mutedMembers?.includes(user.id)) {
+      showToast("You are muted!", "err");
+      return;
+    }
+
+    if (activeGroupId === 'live-space' && Date.now() - lastSentTime < 1000) { 
+      showToast("Slow down!", 'err'); 
+      return; 
+    }
     
     let sharedFile: SharedFile | undefined;
     if (file) {
@@ -328,6 +338,18 @@ export default function App() {
     setLastSentTime(Date.now());
   };
 
+  const handleEditMessage = (id: string, newText: string) => {
+    const msgKey = `cl_msgs_${activeGroupId}`;
+    const all: Message[] = getFromStorage(msgKey) || [];
+    const idx = all.findIndex(m => m.id === id);
+    if (idx > -1) {
+      all[idx].text = newText;
+      all[idx].isEdited = true;
+      saveToStorage(msgKey, all);
+      fetchData();
+    }
+  };
+
   const handleCallAction = (action: 'join' | 'leave') => {
     if (!user || !activeGroupId) return;
     const all: Group[] = getFromStorage('cl_groups') || [];
@@ -345,6 +367,24 @@ export default function App() {
     }
   };
 
+  const handleAdminAction = (targetId: string, action: 'kick' | 'mute' | 'unmute') => {
+    if (!user || !activeGroup || activeGroup.ownerId !== user.id) return;
+    const all: Group[] = getFromStorage('cl_groups') || [];
+    const idx = all.findIndex(g => g.id === activeGroupId);
+    if (idx > -1) {
+      if (action === 'kick') {
+        all[idx].members = all[idx].members.filter(m => m !== targetId);
+      } else if (action === 'mute') {
+        const muted = all[idx].mutedMembers || [];
+        if (!muted.includes(targetId)) all[idx].mutedMembers = [...muted, targetId];
+      } else if (action === 'unmute') {
+        all[idx].mutedMembers = (all[idx].mutedMembers || []).filter(m => m !== targetId);
+      }
+      saveToStorage('cl_groups', all);
+      fetchData();
+    }
+  };
+
   const handleCreateGroup = () => {
     if (!newGroupName.trim() || !user) return;
     const gId = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -357,12 +397,21 @@ export default function App() {
     showToast("Lab Created!");
   };
 
-  const combinedMessages = useMemo(() => [...messages, ...optimisticMessages], [messages, optimisticMessages]);
+  // UI SEPARATION: Chat messages only (exclude files)
+  const chatMessages = useMemo(() => {
+    return [...messages, ...optimisticMessages].filter(m => m.type !== 'file');
+  }, [messages, optimisticMessages]);
+
+  // UI SEPARATION: Files only
+  const labAssets = useMemo(() => {
+    return messages.filter(m => m.type === 'file');
+  }, [messages]);
+
   const onlineCount = useMemo(() => allUsers.filter(u => isOnline(u)).length, [allUsers]);
 
   useEffect(() => {
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-  }, [combinedMessages]);
+  }, [chatMessages]);
 
   if (!user) return <AuthPage onAuth={handleAuthSuccess} />;
 
@@ -420,10 +469,7 @@ export default function App() {
                       }} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[8px] font-black uppercase tracking-widest border border-white/5">
                         <Icons.Copy /> Link
                       </button>
-                      <button onClick={() => {
-                        navigator.clipboard.writeText(activeGroup.id);
-                        showToast("Code Copied: " + activeGroup.id);
-                      }} className="px-3 py-1.5 bg-white/5 text-indigo-500 hover:text-white rounded-lg transition-all text-[8px] font-black uppercase tracking-widest border border-indigo-500/20">
+                      <button className="px-3 py-1.5 bg-indigo-500/10 text-indigo-500 rounded-lg text-[8px] font-black uppercase tracking-widest border border-indigo-500/20">
                         Code: {activeGroup.id}
                       </button>
                     </div>
@@ -433,13 +479,13 @@ export default function App() {
                   {activeGroupId === 'live-space' ? (
                      <div className="flex items-center gap-2">
                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                        <span className="text-[10px] font-black uppercase text-emerald-500 italic tracking-widest">Online: {onlineCount}</span>
+                        <span className="text-[10px] font-black uppercase text-emerald-500 italic tracking-widest">Active: {onlineCount}</span>
                      </div>
                   ) : (
                     <>
                       <div className="flex -space-x-1.5">
                         {allUsers.filter(u => activeGroup.members.includes(u.id)).slice(0, 5).map(m => (
-                          <img key={m.id} src={m.avatar} className={`w-7 h-7 rounded-lg border-2 border-[#050505]`} title={m.username} />
+                          <img key={m.id} src={m.avatar} className={`w-7 h-7 rounded-lg border-2 border-[#050505]`} />
                         ))}
                       </div>
                       <button onClick={() => setShowAbout(true)} className="text-[8px] bg-white/5 px-3 py-1.5 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">Members</button>
@@ -451,35 +497,43 @@ export default function App() {
             <div className="flex-1 flex overflow-hidden">
               <div className="flex-1 flex flex-col relative">
                 <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                  {combinedMessages.length === 0 && (
+                  {chatMessages.length === 0 && (
                     <div className="h-full flex flex-center items-center justify-center opacity-10 italic text-[10px] uppercase font-black tracking-widest">No messages yet</div>
                   )}
-                  {combinedMessages.map(msg => (
+                  {chatMessages.map(msg => (
                     msg.type === 'system' ? (
                       <div key={msg.id} className="text-center py-4"><span className="px-4 py-1.5 rounded-full bg-emerald-500/10 text-[9px] font-black text-emerald-400 uppercase tracking-widest italic border border-emerald-500/20">{msg.text}</span></div>
                     ) : (
-                      <MessageComponent key={msg.id} msg={msg} me={user!} onReply={() => setReplyingTo(msg)} onReact={(id:string,e:string) => {
-                        const msgKey = `cl_msgs_${activeGroupId}`;
-                        const all = getFromStorage(msgKey) || [];
-                        const idx = all.findIndex((m:any) => m.id === id);
-                        if(idx > -1) {
-                          const reactions = all[idx].reactions || [];
-                          const rIdx = reactions.findIndex((r:Reaction) => r.emoji === e);
-                          if(rIdx > -1) {
-                            if(reactions[rIdx].userIds.includes(user.id)) reactions[rIdx].userIds = reactions[rIdx].userIds.filter((uid:string)=>uid!==user.id);
-                            else reactions[rIdx].userIds.push(user.id);
-                          } else { reactions.push({emoji: e, userIds: [user.id]}); }
-                          all[idx].reactions = reactions.filter((r:Reaction)=>r.userIds.length > 0);
-                          saveToStorage(msgKey, all);
+                      <MessageComponent 
+                        key={msg.id} 
+                        msg={msg} 
+                        me={user!} 
+                        onReply={() => setReplyingTo(msg)} 
+                        onEdit={(txt:string) => handleEditMessage(msg.id, txt)}
+                        onReact={(id:string,e:string) => {
+                          const msgKey = `cl_msgs_${activeGroupId}`;
+                          const all = getFromStorage(msgKey) || [];
+                          const idx = all.findIndex((m:any) => m.id === id);
+                          if(idx > -1) {
+                            const reactions = all[idx].reactions || [];
+                            const rIdx = reactions.findIndex((r:Reaction) => r.emoji === e);
+                            if(rIdx > -1) {
+                              if(reactions[rIdx].userIds.includes(user.id)) reactions[rIdx].userIds = reactions[rIdx].userIds.filter((uid:string)=>uid!==user.id);
+                              else reactions[rIdx].userIds.push(user.id);
+                            } else { reactions.push({emoji: e, userIds: [user.id]}); }
+                            all[idx].reactions = reactions.filter((r:Reaction)=>r.userIds.length > 0);
+                            saveToStorage(msgKey, all);
+                            fetchData();
+                          }
+                        }} 
+                        onDelete={() => {
+                          const msgKey = `cl_msgs_${activeGroupId}`;
+                          const all = getFromStorage(msgKey) || [];
+                          saveToStorage(msgKey, all.filter((m:any)=>m.id!==msg.id));
+                          showToast("Message Deleted");
                           fetchData();
-                        }
-                      }} onDelete={() => {
-                        const msgKey = `cl_msgs_${activeGroupId}`;
-                        const all = getFromStorage(msgKey) || [];
-                        saveToStorage(msgKey, all.filter((m:any)=>m.id!==msg.id));
-                        showToast("Message Deleted");
-                        fetchData();
-                      }} />
+                        }} 
+                      />
                     )
                   ))}
                   <div ref={chatEndRef} />
@@ -505,7 +559,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ASSET LAB (Hidden in Live Hub) */}
+              {/* ASSET LAB */}
               {activeGroupId !== 'live-space' && (
                 <div className="w-[340px] bg-[#0a0a0c] border-l border-white/5 flex flex-col shrink-0">
                   <div className="p-5 border-b border-white/5 bg-indigo-600/5">
@@ -515,7 +569,6 @@ export default function App() {
                           <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${u.isSpeaking ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30' : 'bg-white/5'}`}>
                             <img src={u.avatar} className={`w-7 h-7 rounded-lg ${u.isSpeaking ? 'ring-2 ring-emerald-500' : ''}`} />
                             <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{u.username}</span>
-                            {u.isSpeaking && <div className="flex gap-0.5 ml-auto"><div className="w-0.5 h-3 bg-emerald-500 animate-bounce"></div><div className="w-0.5 h-3 bg-emerald-500 animate-bounce delay-75"></div></div>}
                           </div>
                         ))}
                         {usersInCall.length === 0 && <p className="text-[9px] text-slate-700 italic text-center py-4 uppercase font-bold tracking-widest">Quiet Room</p>}
@@ -524,15 +577,27 @@ export default function App() {
                   <div className="p-5 border-b border-white/5 flex items-center justify-between">
                     <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest italic">ASSETS</span>
                     <input type="file" id="lab-up" className="hidden" onChange={e => { if(e.target.files?.[0]) handleSendMessage('', e.target.files[0]); e.target.value=''; }} />
-                    <label htmlFor="lab-up" className="p-2.5 bg-indigo-600 text-white rounded-xl cursor-pointer hover:bg-indigo-500 transition-all shadow-lg"><Icons.Paperclip /></label>
+                    <label htmlFor="lab-up" className="p-2.5 bg-indigo-600 text-white rounded-xl cursor-pointer hover:bg-indigo-500 transition-all shadow-lg"><Icons.Plus /></label>
                   </div>
                   <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                     {messages.filter(m => m.type === 'file').map(msg => (
-                      <FileItem key={msg.id} file={msg.file!} sender={msg.senderName} onPreview={async () => {
-                        const blob = await getBlob(msg.file!.url);
-                        if (blob) setSelectedFile({...msg.file!, url: URL.createObjectURL(blob)});
-                        else showToast("File expired or deleted from DB", 'err');
-                      }} />
+                     {labAssets.map(msg => (
+                      <FileItem 
+                        key={msg.id} 
+                        file={msg.file!} 
+                        sender={msg.senderName} 
+                        canDelete={user.id === activeGroup?.ownerId || user.id === msg.senderId}
+                        onDelete={() => {
+                          const msgKey = `cl_msgs_${activeGroupId}`;
+                          const all = getFromStorage(msgKey) || [];
+                          saveToStorage(msgKey, all.filter((m:any)=>m.id!==msg.id));
+                          fetchData();
+                        }}
+                        onPreview={async () => {
+                          const blob = await getBlob(msg.file!.url);
+                          if (blob) setSelectedFile({...msg.file!, url: URL.createObjectURL(blob)});
+                          else showToast("File missing", 'err');
+                        }} 
+                      />
                     ))}
                   </div>
                 </div>
@@ -565,9 +630,21 @@ export default function App() {
                   <div key={m.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
                     <div className="flex items-center gap-3">
                       <img src={m.avatar} className="w-8 h-8 rounded-lg" />
-                      <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{m.username}</span>
-                      {activeGroup?.ownerId === m.id && <span className="text-[7px] bg-indigo-600 text-white px-1.5 py-0.5 rounded-full uppercase font-bold border border-white/10">Admin</span>}
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-black uppercase text-white italic">{m.username}</span>
+                        {activeGroup?.ownerId === m.id && <span className="text-[7px] text-indigo-500 font-bold uppercase tracking-widest">Admin</span>}
+                      </div>
                     </div>
+                    {user.id === activeGroup?.ownerId && m.id !== user.id && (
+                      <div className="flex gap-2">
+                        {activeGroup.mutedMembers?.includes(m.id) ? (
+                          <button onClick={() => handleAdminAction(m.id, 'unmute')} className="text-[8px] font-black text-emerald-500 uppercase px-2 py-1 bg-emerald-500/10 rounded">Unmute</button>
+                        ) : (
+                          <button onClick={() => handleAdminAction(m.id, 'mute')} className="text-[8px] font-black text-amber-500 uppercase px-2 py-1 bg-amber-500/10 rounded">Mute</button>
+                        )}
+                        <button onClick={() => handleAdminAction(m.id, 'kick')} className="text-[8px] font-black text-rose-500 uppercase px-2 py-1 bg-rose-500/10 rounded">Kick</button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -579,11 +656,13 @@ export default function App() {
         <div className="fixed inset-0 bg-black/95 z-[1000] flex flex-col items-center justify-center p-10" onClick={() => setSelectedFile(null)}>
            <button onClick={() => setSelectedFile(null)} className="absolute top-10 right-10 p-4 bg-white/5 text-white rounded-full hover:bg-rose-600 transition-all z-50"><Icons.X /></button>
            <div className="max-w-4xl w-full max-h-[80vh] flex items-center justify-center rounded-3xl overflow-hidden shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
-              {selectedFile.type.startsWith('image/') && <img src={selectedFile.url} className="max-w-full max-h-full object-contain" />}
-              {selectedFile.type.startsWith('video/') && <video src={selectedFile.url} className="max-w-full max-h-full" controls autoPlay />}
-              {!selectedFile.type.startsWith('image/') && !selectedFile.type.startsWith('video/') && (
+              {selectedFile.type.startsWith('image/') ? (
+                 <img src={selectedFile.url} className="max-w-full max-h-full object-contain" />
+              ) : selectedFile.type.startsWith('video/') ? (
+                 <video src={selectedFile.url} className="max-w-full max-h-full" controls autoPlay />
+              ) : (
                 <div className="bg-[#121216] p-12 rounded-3xl w-full max-w-md text-center">
-                  <div className="w-16 h-16 bg-indigo-600/20 text-indigo-500 rounded-2xl flex items-center justify-center mx-auto mb-6"><Icons.Video /></div>
+                  <div className="w-16 h-16 bg-indigo-600/20 text-indigo-500 rounded-2xl flex items-center justify-center mx-auto mb-6"><Icons.File /></div>
                   <p className="text-white font-black text-sm mb-8 uppercase tracking-widest italic truncate">{selectedFile.name}</p>
                   <a href={selectedFile.url} download={selectedFile.name} className="inline-block px-10 py-4 bg-indigo-600 text-white rounded-xl font-black uppercase tracking-widest text-xs hover:bg-indigo-500 shadow-xl shadow-indigo-600/20">Download File</a>
                 </div>
@@ -601,20 +680,43 @@ export default function App() {
   );
 }
 
-const MessageComponent = ({ msg, me, onReply, onReact, onDelete }: any) => {
+const MessageComponent = ({ msg, me, onReply, onReact, onDelete, onEdit }: any) => {
   const [showMenu, setShowMenu] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(msg.text);
   const contrastText = getContrastColor(msg.color);
   
+  const handleSave = () => {
+    onEdit(editText);
+    setIsEditing(false);
+    setShowMenu(false);
+  };
+
   return (
     <div className={`flex gap-3 group/msg ${msg.senderId === me.id ? 'flex-row-reverse' : ''}`} onClick={() => setShowMenu(!showMenu)}>
       <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-lg bg-black shrink-0 border border-white/5" />
       <div className={`flex flex-col max-w-[80%] relative ${msg.senderId === me.id ? 'items-end' : ''}`}>
         <span className="text-[8px] font-black uppercase tracking-[0.2em] mb-1 px-1 opacity-40 italic">
-          {msg.senderName} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+          {msg.senderName} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} {msg.isEdited && "(edited)"}
         </span>
         
         <div className={`p-2.5 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
-          {msg.text}
+          {isEditing ? (
+            <div className="flex flex-col gap-2 min-w-[200px]">
+              <textarea 
+                className="bg-black/20 border border-white/10 rounded p-2 text-inherit outline-none resize-none" 
+                value={editText} 
+                onChange={e => setEditText(e.target.value)}
+                onClick={e => e.stopPropagation()}
+              />
+              <div className="flex gap-2 justify-end">
+                <button onClick={(e) => { e.stopPropagation(); setIsEditing(false); }} className="text-[10px] font-bold uppercase">Cancel</button>
+                <button onClick={(e) => { e.stopPropagation(); handleSave(); }} className="text-[10px] font-bold uppercase underline">Save</button>
+              </div>
+            </div>
+          ) : (
+            msg.text
+          )}
         </div>
 
         {msg.reactions && msg.reactions.length > 0 && (
@@ -627,7 +729,7 @@ const MessageComponent = ({ msg, me, onReply, onReact, onDelete }: any) => {
           </div>
         )}
 
-        {showMenu && (
+        {showMenu && !isEditing && (
           <div className={`absolute -top-12 flex flex-col bg-[#1a1a20] border border-white/10 rounded-2xl p-1 shadow-2xl z-50 animate-in zoom-in-95 ${msg.senderId === me.id ? 'right-0' : 'left-0'}`}>
             <div className="flex items-center gap-0.5 max-w-[200px] overflow-x-auto p-1 scrollbar-hide">
               {EMOJIS.map(e => (
@@ -635,9 +737,10 @@ const MessageComponent = ({ msg, me, onReply, onReact, onDelete }: any) => {
               ))}
             </div>
             <div className="h-px bg-white/5 w-full my-1"></div>
-            <div className="flex justify-between px-2 py-1">
-              <button onClick={(e) => { e.stopPropagation(); onReply(); setShowMenu(false); }} className="text-indigo-400 p-1.5 hover:bg-indigo-500/10 rounded-lg"><Icons.Reply /></button>
-              {msg.senderId === me.id && <button onClick={(e) => { e.stopPropagation(); onDelete(); setShowMenu(false); }} className="text-rose-500 p-1.5 hover:bg-rose-500/10 rounded-lg"><Icons.Trash /></button>}
+            <div className="flex justify-between px-2 py-1 gap-2">
+              <button onClick={(e) => { e.stopPropagation(); onReply(); setShowMenu(false); }} className="text-indigo-400 p-1.5 hover:bg-indigo-500/10 rounded-lg" title="Reply"><Icons.Reply /></button>
+              {msg.senderId === me.id && <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="text-indigo-400 p-1.5 hover:bg-indigo-500/10 rounded-lg" title="Edit"><Icons.Edit /></button>}
+              {msg.senderId === me.id && <button onClick={(e) => { e.stopPropagation(); onDelete(); setShowMenu(false); }} className="text-rose-500 p-1.5 hover:bg-rose-500/10 rounded-lg" title="Delete"><Icons.Trash /></button>}
             </div>
           </div>
         )}
@@ -657,21 +760,24 @@ const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean }> =
   );
 };
 
-const FileItem: React.FC<{ file: SharedFile, sender: string, onPreview: () => void }> = ({ file, sender, onPreview }) => {
+const FileItem: React.FC<{ file: SharedFile, sender: string, canDelete: boolean, onDelete: () => void, onPreview: () => void }> = ({ file, sender, canDelete, onDelete, onPreview }) => {
   const isImg = file.type.startsWith('image/');
   return (
-    <div className="bg-[#121216] border border-white/5 rounded-2xl overflow-hidden shadow-xl group animate-in zoom-in-95 border-l-2 border-indigo-600">
+    <div className="bg-[#121216] border border-white/5 rounded-2xl overflow-hidden shadow-xl group animate-in zoom-in-95 border-l-2 border-indigo-600 relative">
+      {canDelete && (
+        <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="absolute top-2 right-2 p-1.5 bg-rose-600/80 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity z-10"><Icons.X /></button>
+      )}
       <div className="cursor-pointer aspect-video bg-black flex items-center justify-center relative overflow-hidden" onClick={onPreview}>
          {isImg ? <div className="text-slate-800 scale-150"><Icons.Sparkles /></div> : <div className="text-slate-800"><Icons.File /></div>}
          <div className="absolute inset-0 flex items-center justify-center bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity">
-            <span className="text-[9px] font-black text-white uppercase tracking-widest bg-black/50 px-3 py-1.5 rounded-full">Open</span>
+            <span className="text-[9px] font-black text-white uppercase tracking-widest bg-black/50 px-3 py-1.5 rounded-full">Preview</span>
          </div>
       </div>
       <div className="p-3">
         <p className="text-[10px] font-black text-white truncate uppercase tracking-tighter italic">{file.name}</p>
         <div className="flex items-center justify-between mt-1">
           <span className="text-[8px] font-black text-indigo-500 uppercase">{(file.size / 1024 / 1024).toFixed(1)}MB</span>
-          <span className="text-[8px] text-slate-600 font-bold uppercase italic">by {sender}</span>
+          <span className="text-[8px] text-slate-600 font-bold uppercase italic truncate ml-2">by {sender}</span>
         </div>
       </div>
     </div>
