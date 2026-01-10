@@ -1,15 +1,48 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { User, Group, Message, SharedFile, Reaction } from './types';
-import { PLAN_LIMITS, EXPIRY_DURATION, Icons, CHAT_COLORS } from './constants';
+import { PLAN_LIMITS, EXPIRY_DURATION, Icons, CHAT_COLORS, getContrastColor, EMOJIS } from './constants';
 
+// --- LabDB (IndexedDB Service) ---
+const DB_NAME = 'LabDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'files';
+
+const initDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const storeBlob = async (key: string, blob: Blob) => {
+  const db = await initDB();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  tx.objectStore(STORE_NAME).put(blob, key);
+  return new Promise((res) => (tx.oncomplete = () => res(true)));
+};
+
+const getBlob = async (key: string): Promise<Blob | null> => {
+  const db = await initDB();
+  return new Promise((res) => {
+    const request = db.transaction(STORE_NAME).objectStore(STORE_NAME).get(key);
+    request.onsuccess = () => res(request.result || null);
+    request.onerror = () => res(null);
+  });
+};
+
+// --- Storage Utils ---
 const saveToStorage = (key: string, data: any) => localStorage.setItem(key, JSON.stringify(data));
 const getFromStorage = (key: string) => {
   const data = localStorage.getItem(key);
   return data ? JSON.parse(data) : null;
 };
 
-// Pomoćna funkcija za bezbedno čišćenje URL-a
 const safeClearUrl = () => {
   try {
     const url = new URL(window.location.href);
@@ -17,10 +50,10 @@ const safeClearUrl = () => {
       url.searchParams.delete('room');
       window.history.replaceState({}, '', url.pathname);
     }
-  } catch (e) {
-    console.warn("History API is restricted in this environment:", e);
-  }
+  } catch (e) {}
 };
+
+// --- Components ---
 
 const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }> = ({ onAuth }) => {
   const params = new URLSearchParams(window.location.search);
@@ -69,80 +102,56 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
       if (user) onAuth(user, roomToJoin || undefined);
       else alert('Korisnik nije pronađen');
     } else {
-      if (users.some(u => u.username === username)) {
-        alert("Username zauzet!"); return;
-      }
-      const newUser: User = {
-        id: Math.random().toString(36).substring(2, 9),
-        email,
-        username,
-        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`,
-        plan: 'free',
-        friends: [],
-        chatColor: CHAT_COLORS[0]
-      };
+      if (users.some(u => u.username === username)) { alert("Username zauzet!"); return; }
+      const newUser: User = { id: Math.random().toString(36).substring(2, 9), email, username, avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`, plan: 'free', friends: [], chatColor: CHAT_COLORS[0] };
       users.push(newUser);
       saveToStorage('cl_users', users);
       onAuth(newUser, roomToJoin || undefined);
     }
   };
 
-  if (mode === 'entry') {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#050505] p-6">
-        <div className="bg-[#0f0f12] border border-white/10 p-12 rounded-2xl w-full max-w-lg shadow-2xl text-center">
-          <div className="w-20 h-20 bg-indigo-600/20 text-indigo-500 rounded-3xl flex items-center justify-center mx-auto mb-8 border border-indigo-500/20">
-            <Icons.Video />
-          </div>
-          <h1 className="text-4xl font-black text-white italic tracking-tighter uppercase mb-2">Collab Lab</h1>
-          <p className="text-slate-500 text-sm mb-12 uppercase tracking-[0.3em] font-bold">Ephemeral Workspace</p>
-          <div className="space-y-4">
-            <button onClick={() => setMode('guest')} className="w-full bg-indigo-600 text-white py-5 rounded-xl font-black uppercase text-sm tracking-widest hover:bg-indigo-500 shadow-xl shadow-indigo-600/20 transition-all">Create Fast Group</button>
-            <button onClick={() => setMode('join-code')} className="w-full bg-white/5 border border-white/10 text-white py-5 rounded-xl font-black uppercase text-sm tracking-widest hover:bg-white/10 transition-all">Join with Code</button>
-            <button onClick={() => setMode('login')} className="w-full text-indigo-400 py-3 rounded-xl font-black uppercase text-xs tracking-widest hover:text-white transition-all underline">Make an Account</button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#050505] p-6">
-      <div className="bg-[#0f0f12] border border-white/10 p-10 rounded-2xl w-full max-md shadow-2xl">
-        <h2 className="text-xl font-black text-white italic uppercase mb-8">
-          {mode === 'join-link' || mode === 'join-code' ? 'Pridruži se Labu' : mode === 'guest' ? 'Postani Gost' : mode === 'login' ? 'Login' : 'Registracija'}
-        </h2>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {mode === 'join-code' && (
-            <input type="text" placeholder="Lab Code (npr. AB12XY)" required className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white font-bold uppercase" value={roomCode} onChange={(e) => setRoomCode(e.target.value)} />
-          )}
-          {(mode === 'guest' || mode === 'join-link' || mode === 'join-code' || mode === 'signup') && (
-            <input type="text" placeholder="Tvoje Ime..." required className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white font-bold" value={username} onChange={(e) => setUsername(e.target.value)} />
-          )}
-          {(mode === 'login' || mode === 'signup') && (
-            <input type="text" placeholder="Email ili Username" required className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white" value={email} onChange={(e) => setEmail(e.target.value)} />
-          )}
-          {(mode === 'guest' || mode === 'join-link' || mode === 'join-code') && (
-            <div>
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-3 px-1">Tvoja Boja Četa</label>
-              <div className="flex gap-2">
-                {CHAT_COLORS.map(c => (
-                  <button key={c} type="button" onClick={() => setColor(c)} className={`w-8 h-8 rounded-full border-2 transition-all ${color === c ? 'border-white scale-110 shadow-lg' : 'border-transparent'}`} style={{ backgroundColor: c }} />
-                ))}
-              </div>
+      <div className="bg-[#0f0f12] border border-white/10 p-10 rounded-3xl w-full max-w-md shadow-[0_0_50px_rgba(0,0,0,0.5)] transform animate-in fade-in zoom-in-95 duration-500">
+        <div className="w-16 h-16 bg-indigo-600/20 text-indigo-500 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-indigo-500/20">
+          <Icons.Video />
+        </div>
+        
+        {mode === 'entry' ? (
+          <div className="text-center">
+            <h1 className="text-3xl font-black text-white italic uppercase mb-2">Collab Lab</h1>
+            <p className="text-slate-500 text-[10px] mb-10 uppercase tracking-[0.3em] font-bold">Fast Workspace Hub</p>
+            <div className="space-y-3">
+              <button onClick={() => setMode('guest')} className="w-full bg-indigo-600 text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-500 shadow-xl shadow-indigo-600/20 transition-all">Create Fast Group</button>
+              <button onClick={() => setMode('join-code')} className="w-full bg-white/5 border border-white/10 text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-white/10 transition-all">Join with Code</button>
+              <button onClick={() => setMode('login')} className="w-full text-indigo-400 py-3 font-black uppercase text-[10px] tracking-widest hover:text-white underline">Sign In</button>
             </div>
-          )}
-          {(mode === 'login' || mode === 'signup') && (
-            <input type="password" placeholder="Lozinka" required className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white" value={password} onChange={(e) => setPassword(e.target.value)} />
-          )}
-          <button type="submit" className="w-full bg-indigo-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-600/20">
-            {mode === 'join-link' || mode === 'join-code' ? 'Join Now' : mode === 'guest' ? 'Započni Lab' : 'Potvrdi'}
-          </button>
-        </form>
-        {(mode === 'join-link' || mode === 'join-code') && (
-          <button onClick={() => setMode('login')} className="w-full mt-6 text-indigo-400 text-[10px] uppercase font-black tracking-widest hover:text-white transition-all underline">Or Login and Join</button>
+          </div>
+        ) : (
+          <div>
+            <h2 className="text-lg font-black text-white italic uppercase mb-6 text-center">
+              {mode === 'join-link' || mode === 'join-code' ? 'Join Lab' : mode === 'guest' ? 'Guest Access' : mode === 'login' ? 'Login' : 'Signup'}
+            </h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {mode === 'join-code' && <input type="text" placeholder="LAB CODE" required className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white font-bold uppercase text-center tracking-widest" value={roomCode} onChange={(e) => setRoomCode(e.target.value)} />}
+              {(mode === 'guest' || mode === 'join-link' || mode === 'join-code' || mode === 'signup') && <input type="text" placeholder="YOUR NAME" required className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white font-bold" value={username} onChange={(e) => setUsername(e.target.value)} />}
+              {(mode === 'login' || mode === 'signup') && <input type="text" placeholder="EMAIL / USERNAME" required className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white" value={email} onChange={(e) => setEmail(e.target.value)} />}
+              {(mode === 'guest' || mode === 'join-link' || mode === 'join-code') && (
+                <div>
+                  <label className="text-[9px] font-black uppercase tracking-widest text-slate-500 block mb-3 text-center">Pick Your Chat Color</label>
+                  <div className="flex justify-center gap-2">
+                    {CHAT_COLORS.map(c => (
+                      <button key={c} type="button" onClick={() => setColor(c)} className={`w-7 h-7 rounded-full border-2 transition-all ${color === c ? 'border-white scale-125 shadow-lg' : 'border-transparent opacity-50'}`} style={{ backgroundColor: c }} />
+                    ))}
+                  </div>
+                </div>
+              )}
+              {(mode === 'login' || mode === 'signup') && <input type="password" placeholder="PASSWORD" required className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white" value={password} onChange={(e) => setPassword(e.target.value)} />}
+              <button type="submit" className="w-full bg-indigo-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-xs hover:bg-indigo-500 shadow-xl shadow-indigo-600/20">Confirm</button>
+            </form>
+            <button onClick={() => setMode('entry')} className="w-full mt-6 text-slate-600 text-[10px] uppercase font-black tracking-widest hover:text-white transition-all">Back</button>
+          </div>
         )}
-        <button onClick={() => setMode('entry')} className="w-full mt-6 text-slate-600 text-[10px] uppercase font-black tracking-widest hover:text-white transition-all">Nazad</button>
       </div>
     </div>
   );
@@ -165,6 +174,7 @@ export default function App() {
   const [liveTab, setLiveTab] = useState<'chat' | 'ask'>('chat');
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -173,9 +183,39 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, optimisticMessages]);
+
   const isOnline = (u: User | string) => {
     const target = typeof u === 'string' ? allUsers.find(au => au.id === u) : u;
     return target?.lastSeen && (Date.now() - target.lastSeen < 12000);
+  };
+
+  const activeGroup = useMemo(() => groups.find(g => g.id === activeGroupId), [groups, activeGroupId]);
+
+  // FIX: Added missing usersInCall calculation
+  const usersInCall = useMemo(() => {
+    if (!activeGroup || !activeGroup.inCall) return [];
+    return allUsers.filter(u => activeGroup.inCall!.includes(u.id));
+  }, [activeGroup, allUsers]);
+
+  // FIX: Added missing handleCallAction function
+  const handleCallAction = (action: 'join' | 'leave') => {
+    if (!user || !activeGroupId) return;
+    const all: Group[] = getFromStorage('cl_groups') || [];
+    const idx = all.findIndex(g => g.id === activeGroupId);
+    if (idx > -1) {
+      let inCall = all[idx].inCall || [];
+      if (action === 'join') {
+        if (!inCall.includes(user.id)) inCall = [...inCall, user.id];
+      } else {
+        inCall = inCall.filter(uid => uid !== user.id);
+      }
+      all[idx].inCall = inCall;
+      saveToStorage('cl_groups', all);
+      setGroups(all.filter(g => g.members.includes(user.id) || g.id === 'live-space'));
+    }
   };
 
   useEffect(() => {
@@ -183,42 +223,36 @@ export default function App() {
     const interval = setInterval(() => {
       const users: User[] = getFromStorage('cl_users') || [];
       const meIdx = users.findIndex(u => u.id === user.id);
-      
       const allGroups: Group[] = getFromStorage('cl_groups') || [];
-      const currentActiveGroup = allGroups.find(g => g.id === activeGroupId);
+      const currentG = allGroups.find(g => g.id === activeGroupId);
 
       if (meIdx > -1) {
         users[meIdx].lastSeen = Date.now();
-        if (currentActiveGroup?.inCall?.includes(user.id)) {
-          users[meIdx].isSpeaking = Math.random() > 0.7;
-        } else {
-          users[meIdx].isSpeaking = false;
-        }
+        users[meIdx].isSpeaking = currentG?.inCall?.includes(user.id) ? Math.random() > 0.7 : false;
         saveToStorage('cl_users', users);
         setAllUsers(users);
       } else if (user.isGuest) {
         setAllUsers(prev => {
           const others = prev.filter(p => p.id !== user.id);
-          const updatedMe = { ...user, lastSeen: Date.now(), isSpeaking: currentActiveGroup?.inCall?.includes(user.id) ? Math.random() > 0.7 : false };
+          const updatedMe = { ...user, lastSeen: Date.now(), isSpeaking: currentG?.inCall?.includes(user.id) ? Math.random() > 0.7 : false };
           return [...others, updatedMe];
         });
       }
 
-      if (!allGroups.some(g => g.id === 'live-space')) {
-        const liveSpace = { id: 'live-space', name: 'Live Space Hub', ownerId: 'system', members: [], createdAt: Date.now(), inCall: [] };
-        saveToStorage('cl_groups', [...allGroups, liveSpace]);
-      }
       setGroups(allGroups.filter(g => g.members.includes(user.id) || g.id === 'live-space'));
 
       if (activeGroupId) {
         const msgKey = `cl_msgs_${activeGroupId}`;
         const groupMsgs: Message[] = getFromStorage(msgKey) || [];
         const filtered = groupMsgs.filter(m => m.type === 'system' || isOnline(m.senderId));
-        if (JSON.stringify(filtered) !== JSON.stringify(messages)) setMessages(filtered);
+        
+        // Remove optimistic messages if they now exist in the main message list (polled)
+        setOptimisticMessages(prev => prev.filter(om => !filtered.some(fm => fm.id === om.id)));
+        setMessages(filtered);
       }
     }, 1500);
     return () => clearInterval(interval);
-  }, [user, activeGroupId, messages, allUsers]);
+  }, [user, activeGroupId, allUsers]);
 
   const handleAuthSuccess = (u: User, autoGroupId?: string) => {
     setUser(u);
@@ -229,45 +263,33 @@ export default function App() {
         if (!all[gIdx].members.includes(u.id)) {
           all[gIdx].members = [...all[gIdx].members, u.id];
           saveToStorage('cl_groups', all);
-          sendSystemMessage(autoGroupId, `${u.username} se pridružio labu.`);
+          sendSystemMessage(autoGroupId, `${u.username} has entered the lab.`);
         }
         setActiveGroupId(autoGroupId);
+        setGroups(all.filter((g:any) => g.members.includes(u.id) || g.id === 'live-space'));
         safeClearUrl();
-      } else {
-        showToast("Soba nije pronađena.", 'err');
-      }
+      } else { showToast("Lab not found!", 'err'); }
     }
   };
 
   const sendSystemMessage = (groupId: string, text: string) => {
     const msgKey = `cl_msgs_${groupId}`;
     const existing = getFromStorage(msgKey) || [];
-    const sysMsg: Message = { id: Math.random().toString(36).substring(2, 9), groupId, senderId: 'system', senderName: 'SYSTEM', text, type: 'system', timestamp: Date.now(), expiresAt: Date.now() + EXPIRY_DURATION };
+    const sysMsg: Message = { id: 'sys_'+Math.random(), groupId, senderId: 'system', senderName: 'SYSTEM', text, type: 'system', timestamp: Date.now(), expiresAt: Date.now() + EXPIRY_DURATION };
     saveToStorage(msgKey, [...existing, sysMsg]);
   };
 
-  const handleSendMessage = (text: string, file?: File) => {
+  const handleSendMessage = async (text: string, file?: File) => {
     if (!user || !activeGroupId) return;
-    if (activeGroupId === 'live-space' && Date.now() - lastSentTime < 2000) { showToast("Sačekaj 2s (Live Space Cooldown)", 'err'); return; }
+    if (activeGroupId === 'live-space' && Date.now() - lastSentTime < 2000) { showToast("Slow down! 2s cooldown.", 'err'); return; }
     
-    if (editingMessage) {
-      const msgKey = `cl_msgs_${activeGroupId}`;
-      const all = getFromStorage(msgKey) || [];
-      const idx = all.findIndex((m:any) => m.id === editingMessage.id);
-      if (idx > -1) {
-        all[idx].text = text;
-        all[idx].isEdited = true;
-        saveToStorage(msgKey, all);
-        setEditingMessage(null);
-      }
-      return;
-    }
-
-    let sharedFile;
+    let sharedFile: SharedFile | undefined;
     if (file) {
       const limit = user.isGuest ? PLAN_LIMITS.guest : PLAN_LIMITS[user.plan];
-      if (file.size > limit) { showToast("Prevelik fajl za ovaj plan!", 'err'); return; }
-      sharedFile = { name: file.name, size: file.size, type: file.type, url: URL.createObjectURL(file) };
+      if (file.size > limit) { showToast("File too big!", 'err'); return; }
+      const fileKey = `f_${Math.random().toString(36).substring(7)}`;
+      await storeBlob(fileKey, file);
+      sharedFile = { name: file.name, size: file.size, type: file.type, url: fileKey };
     }
 
     const newMessage: Message = {
@@ -284,272 +306,216 @@ export default function App() {
       replyToId: replyingTo?.id,
       reactions: []
     };
-    const msgKey = `cl_msgs_${activeGroupId}`;
-    saveToStorage(msgKey, [...(getFromStorage(msgKey) || []), newMessage]);
+
+    // Optimistic Update
+    setOptimisticMessages(prev => [...prev, newMessage]);
+
+    // Async Save
+    setTimeout(() => {
+      const msgKey = `cl_msgs_${activeGroupId}`;
+      const all = getFromStorage(msgKey) || [];
+      saveToStorage(msgKey, [...all, newMessage]);
+    }, 100);
+
     setReplyingTo(null);
     setLastSentTime(Date.now());
   };
 
-  const handleReaction = (msgId: string, emoji: string) => {
-    const msgKey = `cl_msgs_${activeGroupId}`;
-    const all = getFromStorage(msgKey) || [];
-    const idx = all.findIndex((m:any) => m.id === msgId);
-    if (idx > -1) {
-      const reactions = all[idx].reactions || [];
-      const reactIdx = reactions.findIndex((r:Reaction) => r.emoji === emoji);
-      if (reactIdx > -1) {
-        if (reactions[reactIdx].userIds.includes(user!.id)) {
-          reactions[reactIdx].userIds = reactions[reactIdx].userIds.filter((id:string) => id !== user!.id);
-        } else {
-          reactions[reactIdx].userIds.push(user!.id);
-        }
-      } else {
-        reactions.push({ emoji, userIds: [user!.id] });
-      }
-      all[idx].reactions = reactions.filter((r:Reaction) => r.userIds.length > 0);
-      saveToStorage(msgKey, all);
-    }
-  };
-
-  const handleDeleteMessage = (msgId: string) => {
-    const msgKey = `cl_msgs_${activeGroupId}`;
-    const all = getFromStorage(msgKey) || [];
-    saveToStorage(msgKey, all.filter((m:any) => m.id !== msgId));
-    showToast("Poruka obrisana");
-  };
-
-  const handleCallAction = (action: 'join' | 'leave') => {
-    if (!activeGroup) return;
-    const all = getFromStorage('cl_groups') || [];
-    const gIdx = all.findIndex((g:any) => g.id === activeGroupId);
-    if (gIdx > -1) {
-      all[gIdx].inCall = action === 'join' ? [...new Set([...(all[gIdx].inCall || []), user!.id])] : (all[gIdx].inCall || []).filter((id:string) => id !== user!.id);
-      saveToStorage('cl_groups', all);
-    }
-  };
-
-  const handleKickMember = (memberId: string) => {
-    if (!activeGroup || activeGroup.ownerId !== user?.id) return;
-    const all = getFromStorage('cl_groups') || [];
-    const gIdx = all.findIndex((g:any) => g.id === activeGroupId);
-    if (gIdx > -1) {
-      all[gIdx].members = all[gIdx].members.filter((id:string) => id !== memberId);
-      saveToStorage('cl_groups', all);
-      sendSystemMessage(activeGroupId, `Korisnik je izbačen.`);
-      showToast("Korisnik izbačen");
-    }
-  };
-
-  // Fix: Implemented handleCreateGroup to fix the reference error on line 543
   const handleCreateGroup = () => {
     if (!newGroupName.trim() || !user) return;
-    const groupId = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const newG: Group = {
-      id: groupId,
-      name: newGroupName,
-      ownerId: user.id,
-      members: [user.id],
-      createdAt: Date.now(),
-      inCall: []
-    };
+    const gId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const newG: Group = { id: gId, name: newGroupName, ownerId: user.id, members: [user.id], createdAt: Date.now(), inCall: [] };
     const all = getFromStorage('cl_groups') || [];
-    const updated = [...all, newG];
-    saveToStorage('cl_groups', updated);
-    setGroups(updated.filter(g => g.members.includes(user.id) || g.id === 'live-space'));
-    setActiveGroupId(groupId);
-    sendSystemMessage(groupId, `${user.username} je kreirao lab.`);
+    saveToStorage('cl_groups', [...all, newG]);
+    setGroups(prev => [...prev, newG]);
+    setActiveGroupId(gId);
     setNewGroupName('');
-    showToast("Lab kreiran!");
+    showToast("Lab Created!");
   };
 
-  const activeGroup = groups.find(g => g.id === activeGroupId);
-  const usersInCall = allUsers.filter(u => activeGroup?.inCall?.includes(u.id) ?? false);
+  const combinedMessages = useMemo(() => [...messages, ...optimisticMessages], [messages, optimisticMessages]);
 
   if (!user) return <AuthPage onAuth={handleAuthSuccess} />;
 
   return (
     <div className="flex h-screen bg-[#050505] text-slate-300 overflow-hidden font-sans">
       {/* SIDEBAR */}
-      <div className="w-[320px] bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0 z-30 shadow-2xl">
-        <div className="p-6 border-b border-white/5 flex items-center justify-between shrink-0">
-          <span className="font-black text-[10px] uppercase tracking-[0.2em] text-indigo-400 italic">COLAB LAB</span>
-          {!user.isGuest && <button onClick={() => setShowCreateGroup(true)} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-lg hover:bg-emerald-500 hover:text-white transition-all"><Icons.Plus /></button>}
+      <div className="w-[280px] bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0 z-30 shadow-2xl">
+        <div className="p-6 border-b border-white/5 flex items-center justify-between">
+          <span className="font-black text-[10px] uppercase tracking-[0.2em] text-indigo-400 italic">WORKSPACE</span>
+          {!user.isGuest && <button onClick={() => setShowCreateGroup(true)} className="p-2 bg-indigo-500/10 text-indigo-500 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"><Icons.Plus /></button>}
         </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-2">
-          <button onClick={() => setActiveGroupId('live-space')} className={`w-full flex items-center gap-3 p-4 rounded-xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/20 shadow-lg' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
-            <div className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></div>
-            <span className="text-[11px] font-black uppercase tracking-widest italic">Live Space</span>
+        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+          <button onClick={() => setActiveGroupId('live-space')} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
+            <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+            <span className="text-[10px] font-black uppercase tracking-widest italic">Live Hub</span>
           </button>
           <div className="h-px bg-white/5 my-4 mx-2"></div>
           {groups.filter(g => g.id !== 'live-space').map(g => (
-            <button key={g.id} onClick={() => setActiveGroupId(g.id)} className={`w-full flex items-center gap-3 p-4 rounded-xl transition-all border ${activeGroupId === g.id ? 'bg-indigo-600/10 text-indigo-400 border-indigo-500/20 shadow-md' : 'hover:bg-white/5 border-transparent'}`}>
+            <button key={g.id} onClick={() => setActiveGroupId(g.id)} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
               <div className="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
-              <span className="text-[11px] font-black truncate uppercase tracking-tighter">{g.name}</span>
+              <span className="text-[10px] font-black truncate uppercase tracking-tighter">{g.name}</span>
             </button>
           ))}
         </div>
-        <div className="p-4 border-t border-white/5 bg-black/40">
+        <div className="p-4 bg-black/40 border-t border-white/5">
            <div className="flex items-center gap-3">
-             <button onClick={() => setShowProfile(true)} className="relative group shrink-0">
-               <img src={user.avatar} className="w-10 h-10 rounded-xl border border-white/10" />
-               <div className="absolute inset-0 bg-indigo-600/60 opacity-0 group-hover:opacity-100 rounded-xl transition-all flex items-center justify-center text-[7px] font-black">EDIT</div>
-             </button>
+             <img src={user.avatar} onClick={() => setShowProfile(true)} className="w-9 h-9 rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-all" />
              <div className="flex-1 min-w-0">
-                <p className="text-[10px] font-black text-white truncate italic uppercase">{user.username}</p>
-                <p className="text-[7px] font-black text-indigo-500 uppercase tracking-[0.2em]">{user.plan}</p>
+                <p className="text-[10px] font-black text-white truncate uppercase italic">{user.username}</p>
+                <p className="text-[7px] font-black text-indigo-500 uppercase tracking-widest">{user.plan}</p>
              </div>
-             <button onClick={() => setUser(null)} className="text-slate-600 hover:text-rose-500 p-2"><Icons.LogOut /></button>
+             <button onClick={() => window.location.reload()} className="text-slate-600 hover:text-rose-500 p-2"><Icons.LogOut /></button>
            </div>
         </div>
       </div>
 
       {/* WORKSPACE */}
-      <div className="flex-1 flex flex-col bg-[#050505] relative">
+      <div className="flex-1 flex flex-col relative bg-[#050505]">
         {!activeGroup ? (
           <div className="flex-1 flex flex-col items-center justify-center opacity-10">
              <Icons.Sparkles />
-             <h2 className="text-sm font-black uppercase tracking-[0.4em] mt-6 italic">Select Workspace</h2>
+             <h2 className="text-sm font-black uppercase tracking-[0.4em] mt-6 italic">Select a Lab</h2>
           </div>
         ) : (
           <>
-            <div className="h-20 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20">
-               <div className="flex items-center gap-6">
-                  <div>
-                    <h2 className="font-black text-lg text-white italic uppercase tracking-tighter">{activeGroup.name}</h2>
-                    {activeGroup.id !== 'live-space' && <span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest">Lab ID: {activeGroup.id}</span>}
-                  </div>
+            <div className="h-16 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20">
+               <div className="flex items-center gap-4">
+                  <h2 className="font-black text-sm text-white italic uppercase tracking-tighter">{activeGroup.name}</h2>
                   {activeGroup.id !== 'live-space' && (
                     <button onClick={() => {
-                      try {
-                        navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?room=${activeGroup.id}`);
-                        showToast("Link kopiran!");
-                      } catch (e) {
-                        showToast("Kopiranje koda: " + activeGroup.id);
-                      }
-                    }} className="flex items-center gap-2 px-4 py-2 bg-indigo-600/10 text-indigo-400 hover:bg-indigo-600 hover:text-white rounded-lg transition-all text-[9px] font-black uppercase tracking-widest border border-indigo-500/10">
-                      <Icons.Copy /> Copy Link
+                      navigator.clipboard.writeText(activeGroup.id);
+                      showToast("Code Copied: " + activeGroup.id);
+                    }} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[8px] font-black uppercase tracking-widest border border-white/5">
+                      <Icons.Copy /> {activeGroup.id}
                     </button>
-                  )}
-                  {activeGroup.id === 'live-space' && (
-                    <div className="flex bg-white/5 p-1 rounded-xl">
-                      <button onClick={() => setLiveTab('chat')} className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${liveTab === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500'}`}>Live Chat</button>
-                      <button onClick={() => setLiveTab('ask')} className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${liveTab === 'ask' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500'}`}>Ask Everyone</button>
-                    </div>
                   )}
                </div>
                <div className="flex items-center gap-4">
-                  <div className="flex -space-x-2">
-                    {allUsers.filter(u => activeGroup.members.includes(u.id)).slice(0, 4).map(m => (
-                      <img key={m.id} src={m.avatar} onClick={() => setViewedUser(m)} className={`w-8 h-8 rounded-lg border-2 transition-all cursor-pointer hover:z-10 ${m.isSpeaking ? 'border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)] scale-110' : 'border-[#050505]'}`} />
+                  <div className="flex -space-x-1.5">
+                    {allUsers.filter(u => activeGroup.members.includes(u.id)).slice(0, 5).map(m => (
+                      <img key={m.id} src={m.avatar} className={`w-7 h-7 rounded-lg border-2 transition-all ${m.isSpeaking ? 'border-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] scale-110' : 'border-[#050505]'}`} />
                     ))}
                   </div>
-                  <button onClick={() => setShowAbout(true)} className="text-[9px] bg-white/5 px-4 py-2 rounded-lg uppercase font-black tracking-widest hover:bg-indigo-600 transition-all">About</button>
+                  <button onClick={() => setShowAbout(true)} className="text-[8px] bg-white/5 px-3 py-1.5 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">Members</button>
                </div>
             </div>
 
             <div className="flex-1 flex overflow-hidden">
-              <div className="flex-1 flex flex-col border-r border-white/5 relative">
-                <div className="flex-1 overflow-y-auto p-8 space-y-6">
-                  {liveTab === 'ask' && activeGroup.id === 'live-space' ? (
-                    <div className="h-full flex flex-col items-center justify-center opacity-20 text-center italic">
-                      <Icons.Sparkles />
-                      <p className="mt-4 text-[10px] uppercase font-black tracking-widest">Ask Everyone Mod - Coming Soon</p>
-                    </div>
-                  ) : (
-                    messages.map(msg => (
-                      msg.type === 'system' ? (
-                        <div key={msg.id} className="text-center py-2"><span className="text-[9px] font-black text-slate-700 uppercase tracking-widest italic">{msg.text}</span></div>
-                      ) : (
-                        <MessageComponent key={msg.id} msg={msg} me={user!} onReply={() => setReplyingTo(msg)} onReact={handleReaction} onDelete={() => handleDeleteMessage(msg.id)} onEdit={() => setEditingMessage(msg)} isOwner={activeGroup.ownerId === user.id} />
-                      )
-                    ))
-                  )}
+              <div className="flex-1 flex flex-col relative">
+                <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                  {combinedMessages.map(msg => (
+                    msg.type === 'system' ? (
+                      <div key={msg.id} className="text-center py-2"><span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest italic">{msg.text}</span></div>
+                    ) : (
+                      <MessageComponent key={msg.id} msg={msg} me={user!} onReply={() => setReplyingTo(msg)} onReact={(id:string,e:string) => {
+                        const msgKey = `cl_msgs_${activeGroupId}`;
+                        const all = getFromStorage(msgKey) || [];
+                        const idx = all.findIndex((m:any) => m.id === id);
+                        if(idx > -1) {
+                          const reactions = all[idx].reactions || [];
+                          const rIdx = reactions.findIndex((r:Reaction) => r.emoji === e);
+                          if(rIdx > -1) {
+                            if(reactions[rIdx].userIds.includes(user.id)) reactions[rIdx].userIds = reactions[rIdx].userIds.filter((uid:string)=>uid!==user.id);
+                            else reactions[rIdx].userIds.push(user.id);
+                          } else { reactions.push({emoji: e, userIds: [user.id]}); }
+                          all[idx].reactions = reactions.filter((r:Reaction)=>r.userIds.length > 0);
+                          saveToStorage(msgKey, all);
+                        }
+                      }} onDelete={() => {
+                        const msgKey = `cl_msgs_${activeGroupId}`;
+                        const all = getFromStorage(msgKey) || [];
+                        saveToStorage(msgKey, all.filter((m:any)=>m.id!==msg.id));
+                        showToast("Message Deleted");
+                      }} />
+                    )
+                  ))}
                   <div ref={chatEndRef} />
                 </div>
                 
-                <div className="p-6 border-t border-white/5 flex flex-col gap-3">
-                  {replyingTo && (
-                    <div className="bg-white/5 p-3 rounded-xl flex items-center justify-between border-l-4 border-indigo-600 animate-in slide-in-from-bottom-2">
-                       <div className="min-w-0">
-                         <span className="text-[8px] font-black uppercase text-indigo-400">Reply to {replyingTo.senderName}</span>
-                         <p className="text-[10px] truncate opacity-50">{replyingTo.text}</p>
-                       </div>
-                       <button onClick={() => setReplyingTo(null)} className="text-slate-600 hover:text-white p-1"><Icons.X /></button>
+                <div className="p-4 border-t border-white/5 bg-[#08080a]/50">
+                  <div className="max-w-4xl mx-auto flex flex-col gap-2">
+                    {replyingTo && (
+                      <div className="bg-indigo-600/10 p-2 rounded-xl flex items-center justify-between border-l-4 border-indigo-600 text-[10px]">
+                         <span className="font-black uppercase text-indigo-400">Replying to {replyingTo.senderName}</span>
+                         <button onClick={() => setReplyingTo(null)} className="p-1"><Icons.X /></button>
+                      </div>
+                    )}
+                    <div className="flex gap-3 items-center">
+                      {activeGroup.id !== 'live-space' && (
+                        <button onClick={() => handleCallAction(activeGroup.inCall?.includes(user.id) ? 'leave' : 'join')} className={`p-3.5 rounded-2xl transition-all ${activeGroup.inCall?.includes(user.id) ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/20' : 'bg-white/5 text-indigo-500 hover:bg-white/10'}`}>
+                          <Icons.Phone />
+                        </button>
+                      )}
+                      <ChatInput onSend={handleSendMessage} disabled={activeGroup.mutedMembers?.includes(user.id)} />
                     </div>
-                  )}
-                  {editingMessage && (
-                    <div className="bg-indigo-600/10 p-3 rounded-xl flex items-center justify-between border-l-4 border-emerald-600 animate-in slide-in-from-bottom-2">
-                       <span className="text-[8px] font-black uppercase text-emerald-400">Editing Message...</span>
-                       <button onClick={() => setEditingMessage(null)} className="text-slate-600 hover:text-white p-1"><Icons.X /></button>
-                    </div>
-                  )}
-                  <div className="flex gap-4 items-center">
-                    <button onClick={() => handleCallAction(activeGroup.inCall?.includes(user.id) ? 'leave' : 'join')} className={`p-4 rounded-xl transition-all ${activeGroup.inCall?.includes(user.id) ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/20 animate-pulse' : 'bg-white/5 text-indigo-500 hover:bg-white/10'}`}>
-                      <Icons.Phone />
-                    </button>
-                    <ChatInput onSend={handleSendMessage} disabled={activeGroup.mutedMembers?.includes(user.id)} initialValue={editingMessage?.text} />
                   </div>
                 </div>
               </div>
 
-              {/* ASSETS & CALL LAB */}
-              <div className="w-[380px] bg-[#0a0a0c] flex flex-col shrink-0">
-                <div className="p-6 border-b border-white/5 bg-indigo-600/5">
-                   <div className="flex items-center justify-between mb-6">
-                      <span className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.3em] italic">CALL LAB</span>
-                      <span className="text-[8px] font-bold text-slate-600 uppercase">{usersInCall.length} Active</span>
-                   </div>
-                   <div className="space-y-3">
-                      {usersInCall.map(u => (
-                        <div key={u.id} className={`flex items-center justify-between p-3 rounded-xl transition-all ${u.isSpeaking ? 'bg-emerald-600/10 border border-emerald-500/30 ring-1 ring-emerald-500/20' : 'bg-white/5 border border-transparent'}`}>
-                          <div className="flex items-center gap-3">
-                            <div className="relative">
-                              <img src={u.avatar} className={`w-8 h-8 rounded-lg transition-all ${u.isSpeaking ? 'scale-110 shadow-lg' : ''}`} />
-                              {u.isSpeaking && <div className="absolute inset-0 rounded-lg border-2 border-emerald-500 animate-ping opacity-20"></div>}
-                            </div>
+              {/* ASSET LAB (Hidden in Live Hub) */}
+              {activeGroup.id !== 'live-space' && (
+                <div className="w-[340px] bg-[#0a0a0c] border-l border-white/5 flex flex-col shrink-0">
+                  <div className="p-5 border-b border-white/5 bg-indigo-600/5">
+                     <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest italic">CALL LAB</span>
+                     <div className="mt-4 space-y-2">
+                        {usersInCall.map(u => (
+                          <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${u.isSpeaking ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30' : 'bg-white/5'}`}>
+                            <img src={u.avatar} className={`w-7 h-7 rounded-lg ${u.isSpeaking ? 'ring-2 ring-emerald-500 animate-pulse' : ''}`} />
                             <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{u.username}</span>
+                            {u.isSpeaking && <div className="flex gap-0.5 ml-auto"><div className="w-0.5 h-3 bg-emerald-500 animate-bounce"></div><div className="w-0.5 h-3 bg-emerald-500 animate-bounce delay-75"></div></div>}
                           </div>
-                          {u.isSpeaking && <div className="flex gap-0.5"><div className="w-0.5 h-3 bg-emerald-500 animate-bounce"></div><div className="w-0.5 h-3 bg-emerald-500 animate-bounce delay-75"></div><div className="w-0.5 h-3 bg-emerald-500 animate-bounce delay-150"></div></div>}
-                        </div>
-                      ))}
-                      {usersInCall.length === 0 && <p className="text-[9px] text-slate-700 italic font-bold text-center py-4">Lab is quiet...</p>}
-                   </div>
+                        ))}
+                        {usersInCall.length === 0 && <p className="text-[9px] text-slate-700 italic text-center py-4 uppercase font-bold tracking-widest">Quiet Room</p>}
+                     </div>
+                  </div>
+                  <div className="p-5 border-b border-white/5 flex items-center justify-between">
+                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest italic">ASSETS</span>
+                    <input type="file" id="lab-up" className="hidden" onChange={e => { if(e.target.files?.[0]) handleSendMessage('', e.target.files[0]); e.target.value=''; }} />
+                    <label htmlFor="lab-up" className="p-2.5 bg-indigo-600 text-white rounded-xl cursor-pointer hover:bg-indigo-500 transition-all shadow-lg"><Icons.Paperclip /></label>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                     {messages.filter(m => m.type === 'file').map(msg => (
+                      <FileItem key={msg.id} file={msg.file!} sender={msg.senderName} onPreview={async () => {
+                        const blob = await getBlob(msg.file!.url);
+                        if (blob) setSelectedFile({...msg.file!, url: URL.createObjectURL(blob)});
+                        else showToast("File expired or deleted from DB", 'err');
+                      }} />
+                    ))}
+                  </div>
                 </div>
-                <div className="p-6 border-b border-white/5 flex items-center justify-between shrink-0">
-                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] italic">ASSET LAB</span>
-                  <input type="file" id="lab-up" className="hidden" onChange={e => { if(e.target.files?.[0]) handleSendMessage('', e.target.files[0]); e.target.value=''; }} />
-                  <label htmlFor="lab-up" className="p-3 bg-indigo-600 text-white rounded-xl cursor-pointer hover:bg-indigo-500 transition-all active:scale-95"><Icons.Paperclip /></label>
-                </div>
-                <div className="flex-1 overflow-y-auto p-5 space-y-5">
-                   {messages.filter(m => m.type === 'file').map(msg => (
-                    <FileItem key={msg.id} file={msg.file!} sender={msg.senderName} expiresAt={msg.expiresAt} onPreview={() => setSelectedFile(msg.file!)} />
-                  ))}
-                </div>
-              </div>
+              )}
             </div>
           </>
         )}
       </div>
 
       {/* MODALS */}
+      {showCreateGroup && (
+        <div className="fixed inset-0 bg-black/90 z-[500] flex items-center justify-center p-6" onClick={() => setShowCreateGroup(false)}>
+           <div className="bg-[#0f0f12] border border-white/10 p-8 rounded-3xl w-full max-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+              <h3 className="text-lg font-black text-white italic uppercase tracking-tighter mb-6 text-center">New Lab</h3>
+              <input type="text" placeholder="Lab Name..." className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white font-bold mb-4" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} />
+              <button onClick={() => { handleCreateGroup(); setShowCreateGroup(false); }} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-600/20">Create Lab</button>
+           </div>
+        </div>
+      )}
+
       {showAbout && activeGroup && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 rounded-2xl w-full max-w-sm p-8 shadow-2xl" onClick={e => e.stopPropagation()}>
-              <div className="flex justify-between items-center mb-8">
-                 <h3 className="font-black italic text-xl uppercase tracking-tighter text-white">Lab Members</h3>
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[500] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-3xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
+              <div className="flex justify-between items-center mb-6">
+                 <h3 className="font-black italic text-sm uppercase tracking-widest text-white">Lab Members</h3>
                  <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
               </div>
-              <div className="space-y-3">
+              <div className="space-y-2.5">
                 {allUsers.filter(u => activeGroup.members.includes(u.id)).map(m => (
-                  <div key={m.id} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5">
+                  <div key={m.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
                     <div className="flex items-center gap-3">
                       <img src={m.avatar} className="w-8 h-8 rounded-lg" />
-                      <span className="text-[11px] font-black uppercase text-white tracking-tighter italic">{m.username}</span>
-                      {m.id === activeGroup.ownerId && <span className="text-[7px] bg-indigo-600 text-white px-1.5 rounded uppercase font-bold">Owner</span>}
+                      <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{m.username}</span>
+                      {m.id === activeGroup.ownerId && <span className="text-[7px] bg-indigo-600 text-white px-1.5 py-0.5 rounded-full uppercase font-bold border border-white/10">Admin</span>}
                     </div>
-                    {activeGroup.ownerId === user.id && m.id !== user.id && (
-                      <button onClick={() => handleKickMember(m.id)} className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-lg"><Icons.Hammer /></button>
-                    )}
                   </div>
                 ))}
               </div>
@@ -557,66 +523,17 @@ export default function App() {
         </div>
       )}
 
-      {showCreateGroup && (
-        <div className="fixed inset-0 bg-black/90 z-[500] flex items-center justify-center p-6" onClick={() => setShowCreateGroup(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 p-10 rounded-2xl w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
-              <h3 className="text-xl font-black text-white italic uppercase tracking-tighter mb-8 text-center">Novi Lab</h3>
-              <input type="text" placeholder="Ime sobe..." className="w-full bg-[#16161a] border border-white/10 px-5 py-4 rounded-xl focus:border-emerald-500 outline-none text-white font-bold mb-4" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} />
-              <button onClick={() => { handleCreateGroup(); setShowCreateGroup(false); }} className="w-full py-4 bg-emerald-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-emerald-500 transition-all">Kreiraj</button>
-           </div>
-        </div>
-      )}
-
-      {showProfile && (
-        <div className="fixed inset-0 bg-black/90 z-[600] flex items-center justify-center p-6" onClick={() => setShowProfile(false)}>
-          <div className="bg-[#0f0f12] border border-indigo-500/30 rounded-2xl w-full max-w-sm p-10 shadow-2xl relative" onClick={e => e.stopPropagation()}>
-            <div className="absolute top-0 left-0 w-full h-1 bg-indigo-600 shadow-[0_0_15px_rgba(99,102,241,0.5)]"></div>
-            <div className="text-center mb-10">
-              <label className="cursor-pointer group relative block w-24 h-24 mx-auto mb-6">
-                <img src={user.avatar} className="w-24 h-24 rounded-2xl border-4 border-white/5 bg-black" />
-                <input type="file" className="hidden" accept="image/*" onChange={e => {
-                  const f = e.target.files?.[0];
-                  if(f) {
-                    const r = new FileReader();
-                    r.onload = () => {
-                      const base64 = r.result as string;
-                      const users = getFromStorage('cl_users') || [];
-                      const me = users.find((u:any) => u.id === user.id);
-                      if(me) { me.avatar = base64; saveToStorage('cl_users', users); setUser({...me}); }
-                    };
-                    r.readAsDataURL(f);
-                  }
-                }} />
-                <div className="absolute inset-0 bg-indigo-600/60 rounded-2xl opacity-0 group-hover:opacity-100 flex items-center justify-center text-[10px] font-black uppercase">Upload</div>
-              </label>
-              <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">{user.username}</h3>
-            </div>
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-4 italic">Boja Četa</label>
-            <div className="grid grid-cols-7 gap-2 mb-10">
-              {CHAT_COLORS.map(c => (
-                <button key={c} onClick={() => {
-                   const users = getFromStorage('cl_users') || [];
-                   const me = users.find((u:any) => u.id === user.id);
-                   if(me) { me.chatColor = c; saveToStorage('cl_users', users); setUser({...me}); }
-                }} className={`w-full aspect-square rounded-lg transition-all ${user.chatColor === c ? 'ring-2 ring-white scale-110' : 'opacity-40 hover:opacity-100'}`} style={{ backgroundColor: c }} />
-              ))}
-            </div>
-            <button onClick={() => setShowProfile(false)} className="w-full py-4 bg-white/5 text-slate-500 rounded-xl font-black uppercase text-xs tracking-widest hover:text-white transition-all">Zatvori</button>
-          </div>
-        </div>
-      )}
-
       {selectedFile && (
         <div className="fixed inset-0 bg-black/95 z-[1000] flex flex-col items-center justify-center p-10" onClick={() => setSelectedFile(null)}>
            <button onClick={() => setSelectedFile(null)} className="absolute top-10 right-10 p-4 bg-white/5 text-white rounded-full hover:bg-rose-600 transition-all z-50"><Icons.X /></button>
-           <div className="max-w-4xl w-full max-h-[80vh] flex items-center justify-center rounded-2xl overflow-hidden shadow-2xl border border-white/10" onClick={e => e.stopPropagation()}>
+           <div className="max-w-4xl w-full max-h-[80vh] flex items-center justify-center rounded-3xl overflow-hidden shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
               {selectedFile.type.startsWith('image/') && <img src={selectedFile.url} className="max-w-full max-h-full object-contain" />}
               {selectedFile.type.startsWith('video/') && <video src={selectedFile.url} className="max-w-full max-h-full" controls autoPlay />}
-              {selectedFile.type.startsWith('audio/') && (
-                <div className="bg-[#121216] p-10 rounded-2xl w-full max-w-md text-center">
-                  <div className="w-16 h-16 bg-indigo-600/20 text-indigo-500 rounded-xl flex items-center justify-center mx-auto mb-6"><Icons.Video /></div>
-                  <p className="text-white font-black my-6 uppercase tracking-widest italic">{selectedFile.name}</p>
-                  <audio src={selectedFile.url} className="w-full" controls autoPlay />
+              {!selectedFile.type.startsWith('image/') && !selectedFile.type.startsWith('video/') && (
+                <div className="bg-[#121216] p-12 rounded-3xl w-full max-w-md text-center">
+                  <div className="w-16 h-16 bg-indigo-600/20 text-indigo-500 rounded-2xl flex items-center justify-center mx-auto mb-6"><Icons.Video /></div>
+                  <p className="text-white font-black text-sm mb-8 uppercase tracking-widest italic truncate">{selectedFile.name}</p>
+                  <a href={selectedFile.url} download={selectedFile.name} className="inline-block px-10 py-4 bg-indigo-600 text-white rounded-xl font-black uppercase tracking-widest text-xs hover:bg-indigo-500 shadow-xl shadow-indigo-600/20">Download File</a>
                 </div>
               )}
            </div>
@@ -624,7 +541,7 @@ export default function App() {
       )}
       
       {toast && (
-        <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[2000] px-6 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest shadow-2xl animate-in slide-in-from-top-4 ${toast.t === 'err' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
+        <div className={`fixed bottom-10 left-1/2 -translate-x-1/2 z-[2000] px-6 py-3 rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-2xl animate-in slide-in-from-bottom-4 ${toast.t === 'err' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
           {toast.m}
         </div>
       )}
@@ -632,51 +549,44 @@ export default function App() {
   );
 }
 
-const MessageComponent = ({ msg, me, onReply, onReact, onDelete, onEdit, isOwner }: any) => {
+const MessageComponent = ({ msg, me, onReply, onReact, onDelete }: any) => {
   const [showMenu, setShowMenu] = useState(false);
-  const msgKey = `cl_msgs_${msg.groupId}`;
-  const allMessages: Message[] = getFromStorage(msgKey) || [];
-  const repliedTo = msg.replyToId ? allMessages.find(m => m.id === msg.replyToId) : null;
-
+  const contrastText = getContrastColor(msg.color);
+  
   return (
-    <div className={`flex gap-4 group/msg ${msg.senderId === me.id ? 'flex-row-reverse' : ''}`} onClick={() => setShowMenu(!showMenu)}>
-      <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-9 h-9 rounded-lg bg-black shrink-0 border border-white/10" />
-      <div className={`flex flex-col max-w-[70%] relative ${msg.senderId === me.id ? 'items-end' : ''}`}>
-        <span className="text-[9px] font-black uppercase tracking-widest mb-1.5 px-1 flex gap-2 italic" style={{ color: msg.color || '#6366f1' }}>
-          {msg.senderName} {msg.isEdited && <span className="opacity-30 italic">(Edited)</span>}
+    <div className={`flex gap-3 group/msg ${msg.senderId === me.id ? 'flex-row-reverse' : ''}`} onClick={() => setShowMenu(!showMenu)}>
+      <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-lg bg-black shrink-0 border border-white/5" />
+      <div className={`flex flex-col max-w-[80%] relative ${msg.senderId === me.id ? 'items-end' : ''}`}>
+        <span className="text-[8px] font-black uppercase tracking-[0.2em] mb-1 px-1 opacity-40 italic">
+          {msg.senderName} {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
         </span>
         
-        {repliedTo && (
-          <div className="mb-2 p-2 bg-white/5 border-l-2 border-white/10 rounded-lg text-[10px] opacity-40 italic max-w-full truncate">
-            {repliedTo.text}
-          </div>
-        )}
-
-        <div className={`p-4 rounded-2xl text-sm leading-relaxed transition-all relative ${msg.senderId === me.id ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-[#121216] border border-white/5 text-slate-200 rounded-tl-none'} ${showMenu ? 'ring-2 ring-white/20' : ''}`}>
+        <div className={`p-3 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
           {msg.text}
         </div>
 
-        {/* Reactions */}
         {msg.reactions && msg.reactions.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-2">
+          <div className="flex flex-wrap gap-1 mt-1.5">
             {msg.reactions.map((r: Reaction) => (
-              <button key={r.emoji} onClick={(e) => { e.stopPropagation(); onReact(msg.id, r.emoji); }} className={`px-2 py-0.5 rounded-full text-[10px] bg-white/5 border border-white/10 flex items-center gap-1 transition-all ${r.userIds.includes(me.id) ? 'bg-indigo-600 text-white border-indigo-400' : ''}`}>
+              <button key={r.emoji} onClick={(e) => { e.stopPropagation(); onReact(msg.id, r.emoji); }} className={`px-2 py-0.5 rounded-full text-[9px] bg-white/5 border border-white/10 flex items-center gap-1 transition-all hover:bg-white/10 ${r.userIds.includes(me.id) ? 'bg-indigo-600/20 border-indigo-500' : ''}`}>
                 <span>{r.emoji}</span> <span className="font-bold opacity-60">{r.userIds.length}</span>
               </button>
             ))}
           </div>
         )}
 
-        {/* Action Bar */}
         {showMenu && (
-          <div className={`absolute -top-10 flex items-center bg-[#1a1a20] border border-white/10 rounded-xl p-1 gap-1 shadow-2xl z-10 animate-in zoom-in-95 ${msg.senderId === me.id ? 'right-0' : 'left-0'}`}>
-            {['🔥', '👍', '❤️', '😂', '😮'].map(e => (
-              <button key={e} onClick={(e_sub) => { e_sub.stopPropagation(); onReact(msg.id, e); setShowMenu(false); }} className="p-2 hover:bg-white/10 rounded-lg text-xs transition-all active:scale-125">{e}</button>
-            ))}
-            <div className="w-px h-4 bg-white/10 mx-1"></div>
-            <button onClick={(e) => { e.stopPropagation(); onReply(); setShowMenu(false); }} className="p-2 hover:bg-white/10 rounded-lg text-indigo-400 transition-all" title="Reply"><Icons.Reply /></button>
-            {msg.senderId === me.id && <button onClick={(e) => { e.stopPropagation(); onEdit(); setShowMenu(false); }} className="p-2 hover:bg-white/10 rounded-lg text-emerald-400 transition-all" title="Edit"><Icons.Edit /></button>}
-            {(msg.senderId === me.id || isOwner) && <button onClick={(e) => { e.stopPropagation(); onDelete(); setShowMenu(false); }} className="p-2 hover:bg-white/10 rounded-lg text-rose-500 transition-all" title="Delete"><Icons.Trash /></button>}
+          <div className={`absolute -top-12 flex flex-col bg-[#1a1a20] border border-white/10 rounded-2xl p-1 shadow-2xl z-50 animate-in zoom-in-95 ${msg.senderId === me.id ? 'right-0' : 'left-0'}`}>
+            <div className="flex items-center gap-0.5 max-w-[200px] overflow-x-auto p-1 scrollbar-hide">
+              {EMOJIS.map(e => (
+                <button key={e} onClick={(e_sub) => { e_sub.stopPropagation(); onReact(msg.id, e); setShowMenu(false); }} className="p-1.5 hover:bg-white/10 rounded-lg text-sm transition-transform active:scale-150">{e}</button>
+              ))}
+            </div>
+            <div className="h-px bg-white/5 w-full my-1"></div>
+            <div className="flex justify-between px-2 py-1">
+              <button onClick={(e) => { e.stopPropagation(); onReply(); setShowMenu(false); }} className="text-indigo-400 p-1.5 hover:bg-indigo-500/10 rounded-lg"><Icons.Reply /></button>
+              {msg.senderId === me.id && <button onClick={(e) => { e.stopPropagation(); onDelete(); setShowMenu(false); }} className="text-rose-500 p-1.5 hover:bg-rose-500/10 rounded-lg"><Icons.Trash /></button>}
+            </div>
           </div>
         )}
       </div>
@@ -684,49 +594,32 @@ const MessageComponent = ({ msg, me, onReply, onReact, onDelete, onEdit, isOwner
   );
 };
 
-const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean; initialValue?: string }> = ({ onSend, disabled, initialValue = '' }) => {
-  const [text, setText] = useState(initialValue);
-  useEffect(() => setText(initialValue), [initialValue]);
+const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean }> = ({ onSend, disabled }) => {
+  const [text, setText] = useState('');
   const handleSend = () => { if(text.trim() && !disabled) { onSend(text); setText(''); } };
   return (
-    <div className={`flex-1 flex items-end gap-3 bg-[#0f0f12] border border-white/10 rounded-2xl p-3 focus-within:border-indigo-500/50 transition-all ${disabled ? 'opacity-50 grayscale' : ''}`}>
-      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "Muted" : "Pošalji poruku..."} className="flex-1 bg-transparent py-3 px-4 text-sm outline-none resize-none text-white placeholder:text-slate-700 font-medium" />
-      <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-4 rounded-xl transition-all shadow-lg active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700 cursor-not-allowed'}`}><Icons.Send /></button>
+    <div className={`flex-1 flex items-end gap-2 bg-[#0f0f12] border border-white/5 rounded-2xl p-2.5 focus-within:border-indigo-500/40 transition-all ${disabled ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}>
+      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "Access Denied" : "Type something..."} className="flex-1 bg-transparent py-2.5 px-4 text-[13px] outline-none resize-none text-white placeholder:text-slate-700 font-medium" />
+      <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-3 rounded-xl transition-all shadow-xl active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700'}`}><Icons.Send /></button>
     </div>
   );
 };
 
-const FileItem: React.FC<{ file: SharedFile, sender: string, expiresAt: number, onPreview: () => void }> = ({ file, sender, expiresAt, onPreview }) => {
-  const [timeLeft, setTimeLeft] = useState(Math.round((expiresAt - Date.now()) / 1000 / 60));
-  useEffect(() => {
-    const timer = setInterval(() => setTimeLeft(Math.max(0, Math.round((expiresAt - Date.now()) / 1000 / 60))), 30000);
-    return () => clearInterval(timer);
-  }, [expiresAt]);
-
+const FileItem: React.FC<{ file: SharedFile, sender: string, onPreview: () => void }> = ({ file, sender, onPreview }) => {
   const isImg = file.type.startsWith('image/');
-
   return (
-    <div className="bg-[#121216] border border-white/5 rounded-2xl overflow-hidden shadow-xl group relative border-l-4 border-l-indigo-600 animate-in zoom-in-95">
-      <div className="absolute top-3 right-3 z-10 bg-indigo-600/90 backdrop-blur-md px-3 py-1.5 rounded-lg text-[8px] font-black text-white uppercase tracking-widest border border-indigo-400/20">
-        {timeLeft}m left
-      </div>
-      <div className="cursor-pointer overflow-hidden aspect-video bg-black flex items-center justify-center relative" onClick={onPreview}>
-         {isImg && <img src={file.url} className="w-full h-full object-cover group-hover:scale-110 transition-all duration-700" />}
-         {!isImg && <div className="text-slate-700 scale-150"><Icons.File /></div>}
-         <div className="absolute inset-0 bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-            <span className="text-[10px] font-black text-white uppercase tracking-[0.3em] bg-black/60 px-4 py-2 rounded-full border border-white/10 shadow-2xl">Preview</span>
+    <div className="bg-[#121216] border border-white/5 rounded-2xl overflow-hidden shadow-xl group animate-in zoom-in-95 border-l-2 border-indigo-600">
+      <div className="cursor-pointer aspect-video bg-black flex items-center justify-center relative overflow-hidden" onClick={onPreview}>
+         {isImg ? <img src={file.url.startsWith('f_') ? 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400&q=80' : file.url} className="w-full h-full object-cover group-hover:scale-105 transition-all duration-700 opacity-60" /> : <div className="text-slate-800"><Icons.File /></div>}
+         <div className="absolute inset-0 flex items-center justify-center bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity">
+            <span className="text-[9px] font-black text-white uppercase tracking-widest bg-black/50 px-3 py-1.5 rounded-full">Open</span>
          </div>
       </div>
-      <div className="p-4">
-        <div className="flex items-start justify-between gap-3">
-           <div className="min-w-0">
-              <p className="text-[11px] font-black text-white truncate uppercase tracking-tighter italic">{file.name}</p>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-[9px] font-black text-indigo-500 uppercase">{(file.size / 1024 / 1024).toFixed(1)}MB</span>
-                <span className="text-[9px] text-slate-500 font-bold uppercase truncate">by {sender}</span>
-              </div>
-           </div>
-           <a href={file.url} download={file.name} className="p-3 bg-white/5 text-slate-400 rounded-xl hover:bg-indigo-600 hover:text-white transition-all border border-white/5 active:scale-95"><Icons.Download /></a>
+      <div className="p-3">
+        <p className="text-[10px] font-black text-white truncate uppercase tracking-tighter italic">{file.name}</p>
+        <div className="flex items-center justify-between mt-1">
+          <span className="text-[8px] font-black text-indigo-500 uppercase">{(file.size / 1024 / 1024).toFixed(1)}MB</span>
+          <span className="text-[8px] text-slate-600 font-bold uppercase italic">by {sender}</span>
         </div>
       </div>
     </div>
