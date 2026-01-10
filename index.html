@@ -3,7 +3,7 @@
 <html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" />
     <title>Collab Lab | Workspace</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -23,18 +23,29 @@
       }
     </script>
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
       body {
         font-family: 'Plus Jakarta Sans', sans-serif;
         background-color: #050505;
         color: #e2e8f0;
         margin: 0;
+        overflow: hidden;
       }
-      .custom-scroll::-webkit-scrollbar { width: 4px; }
+      .custom-scroll::-webkit-scrollbar { width: 3px; }
       .custom-scroll::-webkit-scrollbar-track { background: transparent; }
       .custom-scroll::-webkit-scrollbar-thumb { background: #27272a; border-radius: 10px; }
       .custom-scroll::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
-      #root { min-height: 100vh; }
+      #root { min-height: 100vh; display: flex; flex-direction: column; }
+
+      /* Mobile Fixes */
+      @media (max-width: 768px) {
+        .mobile-hide { display: none !important; }
+        .mobile-full { width: 100% !important; }
+        .text-adaptive { font-size: 11px !important; }
+        .sidebar-compact { width: 60px !important; }
+        .sidebar-compact span, .sidebar-compact p, .sidebar-compact input { display: none !important; }
+        .sidebar-compact .p-4 { padding: 10px !important; justify-content: center !important; }
+      }
     </style>
     <script type="importmap">
 {

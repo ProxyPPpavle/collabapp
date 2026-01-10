@@ -2,6 +2,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { User, Group, Message, SharedFile, Reaction } from './types';
 import { PLAN_LIMITS, EXPIRY_DURATION, Icons, CHAT_COLORS, getContrastColor, EMOJIS } from './constants';
+// Import the feedback service
+import { getFeedbackOnMessage } from './services/gemini';
 
 // --- LabDB (IndexedDB Service) ---
 const DB_NAME = 'LabDB';
@@ -183,7 +185,7 @@ export default function App() {
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [toast, setToast] = useState<{ m: string; t: 'ok' | 'err' } | null>(null);
   const [showAbout, setShowAbout] = useState(false);
-  const [showProfile, setShowProfile] = useState(false);
+  const [profileUserId, setProfileUserId] = useState<string | null>(null);
   const [showInbox, setShowInbox] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [friendSearch, setFriendSearch] = useState('');
@@ -192,6 +194,10 @@ export default function App() {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [activeTab, setActiveTab] = useState<'chat' | 'ask'>('chat');
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
+
+  // Fix: Added state for AI feedback and analysis loading state
+  const [aiFeedback, setAiFeedback] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -232,34 +238,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    const handleUnload = () => {
-      if (user && activeGroupId) {
-        const all: Group[] = getFromStorage('cl_groups') || [];
-        const idx = all.findIndex(g => g.id === activeGroupId);
-        if (idx > -1) {
-          all[idx].inCall = (all[idx].inCall || []).filter(uid => uid !== user.id);
-          saveToStorage('cl_groups', all);
-        }
-      }
-    };
-    window.addEventListener('beforeunload', handleUnload);
-    return () => window.removeEventListener('beforeunload', handleUnload);
-  }, [user, activeGroupId]);
-
-  const handleSwitchGroup = (id: string) => {
-    if (activeGroupId === id) return;
-    setMessages([]);
-    setOptimisticMessages([]);
-    setReplyingTo(null);
-    setActiveGroupId(id);
-    setActiveTab('chat');
-  };
-
-  useEffect(() => {
-    if (user) fetchData();
-  }, [activeGroupId, user]);
-
-  useEffect(() => {
     const sync = (e: StorageEvent) => fetchData();
     window.addEventListener('storage', sync);
     const interval = setInterval(fetchData, 1500);
@@ -282,7 +260,7 @@ export default function App() {
     return () => clearInterval(beat);
   }, [user]);
 
-  const activeGroup = useMemo(() => groups.find(g => g.id === activeGroupId), [groups, activeGroupId]);
+  const activeGroup = useMemo(() => groups.find(g => (g.id === activeGroupId)), [groups, activeGroupId]);
   const usersInCall = useMemo(() => {
     if (!activeGroup || !activeGroup.inCall) return [];
     return allUsers.filter(u => activeGroup.inCall!.includes(u.id));
@@ -298,14 +276,14 @@ export default function App() {
 
     if (autoGroupId) {
       const all: Group[] = getFromStorage('cl_groups') || [];
-      const gIdx = all.findIndex((g:any) => g.id === autoGroupId);
+      const gIdx = all.findIndex((g:any) => g.id.toUpperCase() === autoGroupId.toUpperCase());
       if (gIdx > -1) {
         if (!all[gIdx].members.includes(u.id)) {
           all[gIdx].members.push(u.id);
           saveToStorage('cl_groups', all);
-          sendSystemMessage(autoGroupId, `${u.username} joined.`);
+          sendSystemMessage(all[gIdx].id, `${u.username} joined.`);
         }
-        setActiveGroupId(autoGroupId);
+        setActiveGroupId(all[gIdx].id);
         safeClearUrl();
       } else { 
         showToast("Lab not found!", 'err'); 
@@ -371,7 +349,7 @@ export default function App() {
     }
   };
 
-  const handleAdminAction = (targetId: string, action: 'kick' | 'mute' | 'unmute') => {
+  const handleAdminAction = (targetId: string, action: 'kick') => {
     if (!user || !activeGroup || activeGroup.ownerId !== user.id) return;
     const all: Group[] = getFromStorage('cl_groups') || [];
     const idx = all.findIndex(g => g.id === activeGroupId);
@@ -379,11 +357,6 @@ export default function App() {
       if (action === 'kick') {
         all[idx].members = all[idx].members.filter(m => m !== targetId);
         sendSystemMessage(activeGroupId, `User removed by Admin.`);
-      } else if (action === 'mute') {
-        const muted = all[idx].mutedMembers || [];
-        if (!muted.includes(targetId)) all[idx].mutedMembers = [...muted, targetId];
-      } else if (action === 'unmute') {
-        all[idx].mutedMembers = (all[idx].mutedMembers || []).filter(m => m !== targetId);
       }
       saveToStorage('cl_groups', all);
       fetchData();
@@ -465,6 +438,26 @@ export default function App() {
     }
   };
 
+  const handleUpdateSelf = (updates: Partial<User>) => {
+    if (!user) return;
+    const users: User[] = getFromStorage('cl_users') || [];
+    const meIdx = users.findIndex(u => u.id === user.id);
+    if (meIdx > -1) {
+       users[meIdx] = { ...users[meIdx], ...updates };
+       saveToStorage('cl_users', users);
+       fetchData();
+       showToast("Updated!");
+    }
+  };
+
+  // Fix: Added missing handleSwitchGroup function to fix 'Cannot find name' errors and reset UI state
+  const handleSwitchGroup = (id: string) => {
+    setActiveGroupId(id);
+    setReplyingTo(null);
+    setActiveTab('chat');
+    setAiFeedback(null);
+  };
+
   const chatMessages = useMemo(() => {
     return [...messages, ...optimisticMessages].filter(m => m.type !== 'file');
   }, [messages, optimisticMessages]);
@@ -478,6 +471,25 @@ export default function App() {
   useEffect(() => {
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, activeTab]);
+
+  // Fix: Added AI analysis effect to fetch insights when the 'ask' tab is selected
+  useEffect(() => {
+    if (activeTab === 'ask' && activeGroupId && !aiFeedback && !isAnalyzing) {
+      const triggerAnalysis = async () => {
+        setIsAnalyzing(true);
+        // Provide context by including up to the last 10 messages
+        const contextMessages = messages.slice(-10).map(m => `${m.senderName}: ${m.text}`).join('\n');
+        if (contextMessages.trim()) {
+           const result = await getFeedbackOnMessage(contextMessages, activeGroup?.name || "General Workspace");
+           setAiFeedback(result);
+        } else {
+           setAiFeedback("No message history available for analysis. Start a conversation to get AI insights.");
+        }
+        setIsAnalyzing(false);
+      };
+      triggerAnalysis();
+    }
+  }, [activeTab, activeGroupId, messages.length]);
 
   const triggerDownload = async (file: SharedFile) => {
     const blob = await getBlob(file.url);
@@ -499,119 +511,116 @@ export default function App() {
     <div className="flex h-screen bg-[#050505] text-slate-300 overflow-hidden font-sans select-none">
       
       {/* 1. SOCIAL SIDEBAR (Far Left) */}
-      <div className="w-[200px] bg-[#0a0a0c] border-r border-white/5 flex flex-col shrink-0 z-40">
-        <div className="p-4 border-b border-white/5 flex items-center justify-between">
-           <span className="font-black text-[9px] uppercase tracking-[0.2em] text-indigo-400 italic">CONNECTIONS</span>
+      <div className="w-[180px] bg-[#0a0a0c] border-r border-white/5 flex flex-col shrink-0 z-40 sidebar-compact">
+        <div className="p-4 border-b border-white/5 flex items-center justify-between h-14">
            {!user.isGuest && (
-             <button onClick={() => setShowInbox(true)} className="p-2 bg-white/5 text-slate-500 rounded-lg hover:bg-indigo-600 hover:text-white transition-all relative">
+             <button onClick={() => setShowInbox(true)} className="p-2 bg-white/5 text-slate-500 rounded-xl hover:bg-indigo-600 hover:text-white transition-all relative">
                 <Icons.Mail />
-                {(user.friendRequests || []).length > 0 && <div className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></div>}
+                {(user.friendRequests || []).length > 0 && <div className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full animate-ping"></div>}
              </button>
            )}
+           <span className="font-black text-[9px] uppercase tracking-[0.2em] text-indigo-400 italic mobile-hide">CONTACTS</span>
         </div>
         
         <div className="flex-1 overflow-y-auto custom-scroll p-3 space-y-4">
-           {/* Add Friend - Now at the Top */}
            {!user.isGuest && (
-             <div className="px-1 mb-2">
+             <div className="px-1 mb-2 mobile-hide">
                 <input 
                   type="text" 
-                  placeholder="SEARCH USER..." 
-                  className="w-full bg-white/5 border border-white/5 rounded-xl px-3 py-2.5 text-[9px] outline-none focus:border-indigo-500 transition-all uppercase font-bold text-white italic" 
+                  placeholder="SEARCH..." 
+                  className="w-full bg-white/5 border border-white/5 rounded-xl px-3 py-2 text-[9px] outline-none focus:border-indigo-500 transition-all uppercase font-bold text-white italic" 
                   value={friendSearch} 
                   onChange={e => setFriendSearch(e.target.value)}
                   onKeyDown={e => {
                     if (e.key === 'Enter') {
                        const target = allUsers.find(u => u.username.toLowerCase() === friendSearch.toLowerCase() && !u.isGuest && u.id !== user.id);
                        if (target) { handleSocialAction(target.id, 'request'); setFriendSearch(''); }
-                       else showToast("User not found", "err");
+                       else showToast("Not found", "err");
                     }
                   }}
                 />
              </div>
            )}
 
-           {/* Friends List - Compact Design */}
            <div className="space-y-1">
               {user.friends?.length === 0 ? (
-                 <p className="text-[7px] text-slate-800 italic uppercase font-bold text-center py-4">No friends added</p>
+                 <p className="text-[7px] text-slate-800 italic uppercase font-bold text-center py-4 mobile-hide">Empty</p>
               ) : (
                  user.friends?.map(fId => {
                    const friend = allUsers.find(u => u.id === fId);
                    if (!friend) return null;
                    return (
-                     <div key={fId} className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-white/5 transition-all cursor-pointer group">
+                     <div key={fId} onClick={() => setProfileUserId(friend.id)} className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-white/5 transition-all cursor-pointer group">
                        <div className="relative shrink-0">
-                         <img src={friend.avatar} className="w-8 h-8 rounded-lg grayscale group-hover:grayscale-0 transition-all border border-white/5" />
-                         {isOnline(friend) && <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border-2 border-[#0a0a0c]"></div>}
+                         <img src={friend.avatar} className="w-7 h-7 rounded-lg grayscale group-hover:grayscale-0 transition-all border border-white/5" />
+                         {isOnline(friend) && <div className="absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-emerald-500 border-2 border-[#0a0a0c]"></div>}
                        </div>
-                       <div className="flex-1 min-w-0">
-                         <p className="text-[10px] font-black uppercase text-slate-400 group-hover:text-white truncate italic">{friend.username}</p>
-                         <p className="text-[7px] font-bold text-slate-700 uppercase tracking-widest">{isOnline(friend) ? 'Active' : 'Offline'}</p>
-                       </div>
+                       <p className="flex-1 text-[9px] font-black uppercase text-slate-400 group-hover:text-white truncate italic mobile-hide">{friend.username}</p>
                      </div>
                    );
                  })
               )}
            </div>
         </div>
+
+        {/* PROFILE AT BOTTOM LEFT */}
+        <div className="p-3 border-t border-white/5 bg-black/20">
+           <div className="flex flex-col gap-2">
+             <button onClick={() => setProfileUserId(user.id)} className="flex items-center gap-3 group">
+               <img src={user.avatar} className="w-8 h-8 rounded-xl border border-white/10 hover:scale-105 transition-all" />
+               <div className="flex-1 min-w-0 text-left mobile-hide">
+                  <p className="text-[9px] font-black text-white truncate uppercase italic">{user.username}</p>
+                  <p className="text-[6px] font-black text-indigo-500 uppercase">SETTINGS</p>
+               </div>
+             </button>
+             <button onClick={() => window.location.reload()} className="p-2 text-slate-600 hover:text-rose-500 transition-colors flex justify-center"><Icons.LogOut /></button>
+           </div>
+        </div>
       </div>
 
       {/* 2. WORKSPACE SIDEBAR (Middle) */}
-      <div className="w-[220px] bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0 z-30 shadow-2xl">
+      <div className="w-[200px] bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0 z-30 shadow-2xl mobile-hide">
         <div className="p-4 border-b border-white/5 flex items-center justify-between h-14">
-          <span className="font-black text-[9px] uppercase tracking-[0.2em] text-indigo-400 italic">RESEARCH LABS</span>
+          <span className="font-black text-[9px] uppercase tracking-[0.2em] text-indigo-400 italic">RESEARCH</span>
         </div>
         
         <div className="flex-1 overflow-y-auto p-3 space-y-6 custom-scroll">
-          {/* Create Lab - Now at the Top */}
           {!user.isGuest && (
             <div className="mb-4">
-              <div className="flex items-center gap-2 bg-indigo-600/5 border border-indigo-500/10 rounded-2xl p-1.5 pr-3">
+              <div className="flex items-center gap-1.5 bg-indigo-600/5 border border-indigo-500/10 rounded-2xl p-1 pr-2">
                 <input 
                   type="text" 
                   placeholder="NEW LAB..." 
-                  className="flex-1 bg-transparent px-3 py-2 text-[10px] outline-none text-white font-bold uppercase italic placeholder:text-slate-700"
+                  className="flex-1 bg-transparent px-2 py-1.5 text-[9px] outline-none text-white font-bold uppercase italic placeholder:text-slate-700"
                   value={newGroupName}
                   onChange={e => setNewGroupName(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleCreateGroup()}
                 />
-                <button onClick={handleCreateGroup} className="p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-500 transition-all shadow-lg"><Icons.Plus /></button>
+                <button onClick={handleCreateGroup} className="p-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-all"><Icons.Plus /></button>
               </div>
             </div>
           )}
 
           <div>
-            <button onClick={() => handleSwitchGroup('live-space')} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
-              <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></div>
-              <span className="text-[10px] font-black uppercase tracking-widest italic">Live Hub</span>
+            <button onClick={() => handleSwitchGroup('live-space')} className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
+              <div className="w-1 h-1 rounded-full bg-red-500 animate-pulse"></div>
+              <span className="text-[9px] font-black uppercase tracking-widest italic">Live Hub</span>
             </button>
           </div>
 
           <div className="space-y-1">
              {groups.filter(g => g.id !== 'live-space').map(g => (
-               <button key={g.id} onClick={() => handleSwitchGroup(g.id)} className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
-                 <div className="w-1 h-1 rounded-full bg-slate-700"></div>
-                 <span className="text-[10px] font-black truncate uppercase tracking-tighter italic">{g.name}</span>
+               <button key={g.id} onClick={() => handleSwitchGroup(g.id)} className={`w-full flex items-center gap-3 p-2.5 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
+                 <div className="w-1 h-1 rounded-full bg-slate-700 opacity-20"></div>
+                 <span className="text-[9px] font-black truncate uppercase tracking-tighter italic">{g.name}</span>
                </button>
              ))}
           </div>
         </div>
-
-        <div className="p-4 bg-black/40 border-t border-white/5">
-           <div className="flex items-center gap-3">
-             <img src={user.avatar} onClick={() => setShowProfile(true)} className="w-9 h-9 rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-all shadow-lg" />
-             <div className="flex-1 min-w-0" onClick={() => setShowProfile(true)}>
-                <p className="text-[10px] font-black text-white truncate uppercase italic cursor-pointer">{user.username}</p>
-                <p className="text-[7px] font-black text-indigo-500 uppercase tracking-widest">{user.plan}</p>
-             </div>
-             <button onClick={() => window.location.reload()} className="text-slate-600 hover:text-rose-500 p-2"><Icons.LogOut /></button>
-           </div>
-        </div>
       </div>
 
       {/* 3. WORKSPACE (Main) */}
-      <div className="flex-1 flex flex-col relative bg-[#050505]">
+      <div className="flex-1 flex flex-col relative bg-[#050505] mobile-full">
         {!activeGroup ? (
           <div className="flex-1 flex flex-col items-center justify-center opacity-10">
              <Icons.Sparkles />
@@ -619,49 +628,37 @@ export default function App() {
           </div>
         ) : (
           <>
-            <div className="h-14 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20">
-               <div className="flex items-center gap-4">
-                  <h2 className="font-black text-sm text-white italic uppercase tracking-tighter">{activeGroup.name}</h2>
+            <div className="h-14 border-b border-white/5 flex items-center justify-between px-4 sm:px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20">
+               <div className="flex items-center gap-3 min-w-0">
+                  <h2 className="font-black text-[12px] text-white italic uppercase tracking-tighter truncate">{activeGroup.name}</h2>
                   {activeGroupId !== 'live-space' && (
-                    <div className="flex gap-2">
+                    <div className="flex gap-1.5">
                        <button onClick={() => {
                         const link = `${window.location.origin}${window.location.pathname}?room=${activeGroup.id}`;
                         navigator.clipboard.writeText(link);
-                        showToast("Link Copied!");
-                      }} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[8px] font-black uppercase tracking-widest border border-white/5">
+                        showToast("Copied!");
+                      }} className="flex items-center gap-1 px-2 py-1 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[7px] font-black uppercase tracking-widest border border-white/5">
                         <Icons.Copy /> Link
                       </button>
-                      <button className="px-3 py-1.5 bg-indigo-500/10 text-indigo-500 rounded-lg text-[8px] font-black uppercase tracking-widest border border-indigo-500/20">
-                        Code: {activeGroup.id}
-                      </button>
+                      <span className="px-2 py-1 bg-indigo-500/10 text-indigo-500 rounded-lg text-[7px] font-black uppercase tracking-widest border border-indigo-500/20 mobile-hide">
+                        {activeGroup.id}
+                      </span>
                     </div>
                   )}
                </div>
                
-               <div className="flex items-center gap-6">
-                  {/* TABS (ONLY LIVE HUB) */}
+               <div className="flex items-center gap-4">
                   {activeGroupId === 'live-space' && (
-                    <div className="flex bg-white/5 rounded-xl p-1 border border-white/5">
-                      <button onClick={() => setActiveTab('chat')} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Chat</button>
-                      <button onClick={() => setActiveTab('ask')} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === 'ask' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Ask Feedback</button>
+                    <div className="flex bg-white/5 rounded-xl p-0.5 border border-white/5">
+                      <button onClick={() => setActiveTab('chat')} className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Chat</button>
+                      <button onClick={() => setActiveTab('ask')} className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all ${activeTab === 'ask' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Feedback</button>
                     </div>
                   )}
 
-                  {activeGroupId === 'live-space' ? (
-                     <div className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                        <span className="text-[10px] font-black uppercase text-emerald-500 italic tracking-widest">Active: {onlineCount}</span>
-                     </div>
-                  ) : (
-                    <>
-                      <div className="flex -space-x-1.5">
-                        {allUsers.filter(u => activeGroup.members.includes(u.id)).slice(0, 5).map(m => (
-                          <img key={m.id} src={m.avatar} className={`w-7 h-7 rounded-lg border-2 border-[#050505]`} />
-                        ))}
-                      </div>
-                      <button onClick={() => setShowAbout(true)} className="text-[8px] bg-white/5 px-3 py-1.5 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">Lab Lab</button>
-                    </>
-                  )}
+                  <div className="flex items-center gap-2 mobile-hide">
+                     <div className={`w-1 h-1 rounded-full ${activeGroupId === 'live-space' ? 'bg-emerald-500' : 'bg-slate-500'}`}></div>
+                     <button onClick={() => setShowAbout(true)} className="text-[7px] bg-white/5 px-2 py-1 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all">Members</button>
+                  </div>
                </div>
             </div>
 
@@ -669,19 +666,20 @@ export default function App() {
               <div className="flex-1 flex flex-col relative">
                 {activeTab === 'chat' ? (
                   <>
-                    <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scroll">
+                    <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 custom-scroll">
                       {chatMessages.length === 0 && (
-                        <div className="h-full flex flex-center items-center justify-center opacity-10 italic text-[10px] uppercase font-black tracking-widest">No messages yet</div>
+                        <div className="h-full flex items-center justify-center opacity-10 italic text-[10px] uppercase font-black tracking-widest">No signals...</div>
                       )}
                       {chatMessages.map(msg => (
                         msg.type === 'system' ? (
-                          <div key={msg.id} className="text-center py-4"><span className="px-4 py-1.5 rounded-full bg-emerald-500/10 text-[9px] font-black text-emerald-400 uppercase tracking-widest italic border border-emerald-500/20">{msg.text}</span></div>
+                          <div key={msg.id} className="text-center py-2"><span className="px-3 py-1 rounded-full bg-indigo-500/5 text-[7px] font-black text-indigo-400/40 uppercase tracking-widest italic">{msg.text}</span></div>
                         ) : (
                           <MessageComponent 
                             key={msg.id} 
                             msg={msg} 
                             me={user!} 
                             isAdmin={user.id === activeGroup?.ownerId}
+                            onAvatarClick={() => setProfileUserId(msg.senderId)}
                             onReply={() => setReplyingTo(msg)} 
                             onEdit={(txt:string) => handleEditMessage(msg.id, txt)}
                             onReact={(id:string,e:string) => {
@@ -704,27 +702,25 @@ export default function App() {
                               const msgKey = `cl_msgs_${activeGroupId}`;
                               const all = getFromStorage(msgKey) || [];
                               saveToStorage(msgKey, all.filter((m:any)=>m.id!==msg.id));
-                              showToast("Deleted");
                               fetchData();
                             }} 
-                            onAddFriend={() => handleSocialAction(msg.senderId, 'request')}
                           />
                         )
                       ))}
                       <div ref={chatEndRef} />
                     </div>
                     
-                    <div className="p-4 border-t border-white/5 bg-[#08080a]/50">
+                    <div className="p-3 sm:p-4 border-t border-white/5 bg-[#08080a]/30">
                       <div className="max-w-4xl mx-auto flex flex-col gap-2">
                         {replyingTo && (
-                          <div className="bg-indigo-600/10 p-2 rounded-xl flex items-center justify-between border-l-4 border-indigo-600 text-[10px]">
-                            <span className="font-black uppercase text-indigo-400 pl-2">Replying to {replyingTo.senderName}</span>
+                          <div className="bg-indigo-600/10 p-1.5 rounded-xl flex items-center justify-between border-l-2 border-indigo-600 text-[8px]">
+                            <span className="font-black uppercase text-indigo-400 pl-2">Reply to {replyingTo.senderName}</span>
                             <button onClick={() => setReplyingTo(null)} className="p-1"><Icons.X /></button>
                           </div>
                         )}
-                        <div className="flex gap-3 items-center">
+                        <div className="flex gap-2 sm:gap-3 items-center">
                           {activeGroupId !== 'live-space' && (
-                            <button onClick={() => handleCallAction(activeGroup?.inCall?.includes(user.id) ? 'leave' : 'join')} className={`p-3.5 rounded-2xl transition-all ${activeGroup?.inCall?.includes(user.id) ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/20' : 'bg-white/5 text-indigo-500 hover:bg-white/10 border border-white/5'}`}>
+                            <button onClick={() => handleCallAction(activeGroup?.inCall?.includes(user.id) ? 'leave' : 'join')} className={`p-3 rounded-2xl transition-all ${activeGroup?.inCall?.includes(user.id) ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/20' : 'bg-white/5 text-indigo-500 border border-white/5 hover:scale-105'}`}>
                               <Icons.Phone />
                             </button>
                           )}
@@ -734,38 +730,54 @@ export default function App() {
                     </div>
                   </>
                 ) : (
-                  <div className="flex-1 flex flex-col items-center justify-center p-10 text-center animate-in fade-in slide-in-from-bottom-5">
-                    <div className="w-20 h-20 bg-indigo-600/10 text-indigo-500 rounded-3xl flex items-center justify-center mb-6">
+                  <div className="flex-1 flex flex-col items-center justify-center p-10 text-center animate-in fade-in slide-in-from-bottom-5 custom-scroll overflow-y-auto">
+                    <div className={`w-16 h-16 ${isAnalyzing ? 'animate-pulse bg-indigo-600/30' : 'bg-indigo-600/10'} text-indigo-500 rounded-3xl flex items-center justify-center mb-6`}>
                       <Icons.Sparkles />
                     </div>
-                    <h3 className="text-xl font-black uppercase italic tracking-widest text-white mb-2">Ask Everyone</h3>
-                    <p className="text-slate-500 text-[10px] uppercase font-bold tracking-widest mb-8">Coming Soon: Team Feedback & AI Analysis</p>
-                    <button onClick={() => setActiveTab('chat')} className="px-8 py-3 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all">Back to Chat</button>
+                    <h3 className="text-sm font-black uppercase italic tracking-widest text-white mb-2">Lab Analysis</h3>
+                    <p className="text-slate-500 text-[8px] uppercase font-bold tracking-widest mb-8">AI Intelligence Insights</p>
+                    
+                    <div className="max-w-xl w-full bg-white/5 border border-white/10 rounded-[30px] p-8 text-left relative overflow-hidden shadow-2xl">
+                       <div className="absolute top-0 left-0 w-1.5 h-full bg-indigo-600"></div>
+                       {isAnalyzing ? (
+                         <div className="space-y-4">
+                           <div className="h-2 bg-white/10 rounded w-3/4 animate-pulse"></div>
+                           <div className="h-2 bg-white/10 rounded w-full animate-pulse"></div>
+                           <div className="h-2 bg-white/10 rounded w-5/6 animate-pulse"></div>
+                         </div>
+                       ) : (
+                         <div className="text-[11px] leading-relaxed text-slate-300 italic whitespace-pre-wrap">
+                           {aiFeedback || "Start chatting in this lab to generate research summaries and actionable insights."}
+                         </div>
+                       )}
+                    </div>
+                    
+                    <button onClick={() => setActiveTab('chat')} className="mt-10 px-8 py-3 bg-white/5 border border-white/10 rounded-2xl text-[8px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all text-indigo-400">Return to Terminal</button>
                   </div>
                 )}
               </div>
 
               {/* ASSET LAB (Files) */}
               {activeGroupId !== 'live-space' && (
-                <div className="w-[300px] bg-[#0a0a0c] border-l border-white/5 flex flex-col shrink-0">
-                  <div className="p-5 border-b border-white/5 bg-indigo-600/5">
-                     <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest italic">CALL LAB</span>
-                     <div className="mt-4 space-y-2">
+                <div className="w-[260px] bg-[#0a0a0c] border-l border-white/5 flex flex-col shrink-0 mobile-hide">
+                  <div className="p-4 border-b border-white/5 bg-indigo-600/5">
+                     <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest italic">ACTIVE CALL</span>
+                     <div className="mt-3 space-y-1.5">
                         {usersInCall.map(u => (
-                          <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${Math.random() > 0.6 ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30' : 'bg-white/5'}`}>
-                            <img src={u.avatar} className={`w-7 h-7 rounded-lg ${Math.random() > 0.6 ? 'ring-2 ring-emerald-500 animate-pulse' : ''}`} />
-                            <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{u.username}</span>
+                          <div key={u.id} className={`flex items-center gap-2.5 p-2 rounded-xl bg-white/5 border border-white/5 transition-all ${Math.random() > 0.8 ? 'ring-1 ring-emerald-500/20' : ''}`}>
+                            <img src={u.avatar} className={`w-6 h-6 rounded-lg ${Math.random() > 0.8 ? 'ring-1 ring-emerald-500 animate-pulse' : ''}`} />
+                            <span className="text-[9px] font-black uppercase text-white tracking-tighter italic truncate">{u.username}</span>
                           </div>
                         ))}
-                        {usersInCall.length === 0 && <p className="text-[9px] text-slate-700 italic text-center py-4 uppercase font-bold tracking-widest">Quiet Room</p>}
+                        {usersInCall.length === 0 && <p className="text-[8px] text-slate-700 italic text-center py-4 uppercase font-bold tracking-widest">No active stream</p>}
                      </div>
                   </div>
-                  <div className="p-5 border-b border-white/5 flex items-center justify-between">
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest italic">ASSETS</span>
+                  <div className="p-4 border-b border-white/5 flex items-center justify-between">
+                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest italic">ASSETS</span>
                     <input type="file" id="lab-up" className="hidden" onChange={e => { if(e.target.files?.[0]) handleSendMessage('', e.target.files[0]); e.target.value=''; }} />
-                    <label htmlFor="lab-up" className="p-2.5 bg-indigo-600 text-white rounded-xl cursor-pointer hover:bg-indigo-500 transition-all shadow-lg"><Icons.Plus /></label>
+                    <label htmlFor="lab-up" className="p-2 bg-indigo-600 text-white rounded-lg cursor-pointer hover:bg-indigo-500 transition-all shadow-lg scale-90"><Icons.Plus /></label>
                   </div>
-                  <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scroll">
+                  <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scroll">
                      {labAssets.map(msg => (
                       <FileItem 
                         key={msg.id} 
@@ -782,7 +794,7 @@ export default function App() {
                         onPreview={async () => {
                           const blob = await getBlob(msg.file!.url);
                           if (blob) setSelectedFile({...msg.file!, url: URL.createObjectURL(blob)});
-                          else showToast("Expired", 'err');
+                          else showToast("Missing", 'err');
                         }} 
                       />
                     ))}
@@ -797,56 +809,94 @@ export default function App() {
       {/* MODALS */}
       {showInbox && user && (
         <div className="fixed inset-0 bg-black/90 z-[1000] flex items-center justify-center p-6" onClick={() => setShowInbox(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-sm p-10 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
-              <h3 className="text-xl font-black text-white italic uppercase tracking-widest mb-8 text-center">Inbox</h3>
-              <div className="space-y-4 max-h-[300px] overflow-y-auto custom-scroll pr-2">
+           <div className="bg-[#0f0f12] border border-white/10 rounded-[30px] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
+              <h3 className="text-sm font-black text-white italic uppercase tracking-widest mb-6 text-center">Requests</h3>
+              <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scroll pr-2">
                  {(user.friendRequests || []).length === 0 ? (
-                    <div className="text-center py-10 opacity-20 italic uppercase font-black text-[10px]">No new notifications</div>
+                    <div className="text-center py-10 opacity-20 italic uppercase font-black text-[9px]">Inbox Clear</div>
                  ) : (
                     user.friendRequests?.map(id => {
                       const requester = allUsers.find(au => au.id === id);
                       return requester ? (
-                        <div key={id} className="bg-white/5 p-4 rounded-3xl flex items-center justify-between group border border-white/5">
+                        <div key={id} className="bg-white/5 p-3 rounded-2xl flex items-center justify-between border border-white/5">
                           <div className="flex items-center gap-3">
-                             <img src={requester.avatar} className="w-10 h-10 rounded-xl" />
+                             <img src={requester.avatar} className="w-8 h-8 rounded-lg" />
                              <span className="text-[10px] font-black uppercase text-white italic">{requester.username}</span>
                           </div>
-                          <div className="flex gap-2">
-                             <button onClick={() => handleSocialAction(id, 'accept')} className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-lg hover:bg-indigo-500 transition-all"><Icons.Plus /></button>
-                             <button onClick={() => handleSocialAction(id, 'deny')} className="p-2.5 bg-white/5 text-rose-500 rounded-xl hover:bg-rose-600 hover:text-white transition-all"><Icons.X /></button>
+                          <div className="flex gap-1.5">
+                             <button onClick={() => handleSocialAction(id, 'accept')} className="p-2 bg-indigo-600 text-white rounded-lg shadow-lg hover:bg-indigo-500 transition-all scale-90"><Icons.Plus /></button>
+                             <button onClick={() => handleSocialAction(id, 'deny')} className="p-2 bg-white/5 text-rose-500 rounded-lg hover:bg-rose-600 hover:text-white transition-all scale-90"><Icons.X /></button>
                           </div>
                         </div>
                       ) : null;
                     })
                  )}
               </div>
-              <button onClick={() => setShowInbox(false)} className="w-full mt-10 py-4 bg-white/5 text-slate-500 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:text-white transition-all">Close</button>
+              <button onClick={() => setShowInbox(false)} className="w-full mt-8 py-3 bg-white/5 text-slate-500 rounded-xl font-black uppercase text-[9px] tracking-widest hover:text-white transition-all">Close</button>
            </div>
         </div>
       )}
 
-      {showProfile && user && (
-        <div className="fixed inset-0 bg-black/95 z-[500] flex items-center justify-center p-6" onClick={() => setShowProfile(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-md p-10 shadow-2xl animate-in zoom-in-95 overflow-hidden relative" onClick={e => e.stopPropagation()}>
-              <div className="absolute top-0 left-0 w-full h-32 bg-indigo-600 opacity-10"></div>
-              <div className="relative flex flex-col items-center">
-                 <img src={user.avatar} className="w-32 h-32 rounded-3xl border-4 border-[#0f0f12] shadow-2xl mb-6 mt-10" />
-                 <h3 className="text-2xl font-black uppercase italic text-white tracking-tighter">{user.username}</h3>
-                 <p className="text-slate-500 text-[10px] uppercase font-bold tracking-[0.3em] mb-8">{user.email || 'GUEST ACCOUNT'}</p>
-                 
-                 <div className="w-full space-y-3">
-                   <div className="flex justify-between p-5 bg-white/5 rounded-2xl border border-white/5">
-                      <span className="text-[10px] font-black uppercase text-slate-500">Plan</span>
-                      <span className="text-[10px] font-black uppercase text-indigo-400">{user.plan}</span>
-                   </div>
-                   <div className="flex justify-between p-5 bg-white/5 rounded-2xl border border-white/5">
-                      <span className="text-[10px] font-black uppercase text-slate-500">Member Since</span>
-                      <span className="text-[10px] font-black uppercase text-white">FEB 2025</span>
-                   </div>
-                 </div>
-                 
-                 <button onClick={() => setShowProfile(false)} className="w-full py-4 mt-8 bg-white text-black rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all">Close Profile</button>
-              </div>
+      {/* REFINED PROFILE MODAL */}
+      {profileUserId && (
+        <div className="fixed inset-0 bg-black/95 z-[1100] flex items-center justify-center p-6" onClick={() => setProfileUserId(null)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-md p-8 shadow-2xl animate-in zoom-in-95 overflow-hidden relative" onClick={e => e.stopPropagation()}>
+              {(() => {
+                const target = allUsers.find(u => u.id === profileUserId) || (profileUserId === user.id ? user : null);
+                if (!target) return <p className="text-center italic opacity-20 uppercase font-black">Not found</p>;
+                const isMe = target.id === user.id;
+                const labCount = groups.filter(g => g.members.includes(target.id)).length;
+                
+                return (
+                  <div className="relative flex flex-col items-center">
+                    <div className="absolute top-0 left-0 w-full h-24 bg-indigo-600 opacity-10 rounded-t-[40px] -mt-8"></div>
+                    <img src={target.avatar} className="w-24 h-24 rounded-3xl border-4 border-[#0f0f12] shadow-2xl mb-4 mt-8 bg-black" />
+                    <h3 className="text-lg font-black uppercase italic text-white tracking-tighter">{target.username}</h3>
+                    <p className="text-slate-500 text-[8px] uppercase font-bold tracking-[0.3em] mb-6">{isMe ? (target.email || 'LOCAL ACCOUNT') : 'RESEARCH PARTNER'}</p>
+                    
+                    <div className="w-full grid grid-cols-2 gap-3 mb-6">
+                       <div className="p-4 bg-white/5 rounded-2xl border border-white/5 text-center">
+                          <p className="text-[12px] font-black text-indigo-400">{target.friends?.length || 0}</p>
+                          <p className="text-[7px] font-bold text-slate-600 uppercase tracking-widest">Friends</p>
+                       </div>
+                       <div className="p-4 bg-white/5 rounded-2xl border border-white/5 text-center">
+                          <p className="text-[12px] font-black text-white">{labCount}</p>
+                          <p className="text-[7px] font-bold text-slate-600 uppercase tracking-widest">Labs</p>
+                       </div>
+                    </div>
+
+                    {isMe ? (
+                      <div className="w-full space-y-4">
+                        <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                           <span className="text-[8px] font-black uppercase text-slate-600 tracking-widest block mb-3">Your Chat Color</span>
+                           <div className="flex justify-center gap-2">
+                             {CHAT_COLORS.map(c => (
+                               <button 
+                                key={c} 
+                                onClick={() => handleUpdateSelf({ chatColor: c })} 
+                                className={`w-6 h-6 rounded-full border-2 transition-all ${user.chatColor === c ? 'border-white scale-110 shadow-lg' : 'border-transparent opacity-40 hover:opacity-100'}`} 
+                                style={{ backgroundColor: c }} 
+                               />
+                             ))}
+                           </div>
+                        </div>
+                        <button 
+                          onClick={() => handleUpdateSelf({ avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${Math.random()}` })} 
+                          className="w-full py-3 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[8px] tracking-widest hover:bg-indigo-500 transition-all shadow-lg"
+                        >
+                          Change Appearance
+                        </button>
+                      </div>
+                    ) : (
+                       !user.isGuest && !user.friends?.includes(target.id) && target.id !== 'system' && (
+                         <button onClick={() => handleSocialAction(target.id, 'request')} className="w-full py-3 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[8px] tracking-widest hover:bg-indigo-500 transition-all shadow-lg">Send Friend Request</button>
+                       )
+                    )}
+
+                    <button onClick={() => setProfileUserId(null)} className="w-full py-3 mt-3 bg-white/5 text-slate-500 rounded-2xl font-black uppercase text-[8px] tracking-widest hover:text-white transition-all">Close</button>
+                  </div>
+                );
+              })()}
            </div>
         </div>
       )}
@@ -855,25 +905,24 @@ export default function App() {
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[500] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-3xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
               <div className="flex justify-between items-center mb-6">
-                 <h3 className="font-black italic text-sm uppercase tracking-widest text-white">Lab Members</h3>
+                 <h3 className="font-black italic text-sm uppercase tracking-widest text-white">Lab Lab</h3>
                  <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
               </div>
               
-              {/* Add Members Button for Admin */}
               {user.id === activeGroup.ownerId && (
                 <div className="mb-6">
-                   <span className="text-[8px] font-black uppercase text-indigo-400 tracking-widest block mb-3">Invite Friends</span>
+                   <span className="text-[7px] font-black uppercase text-indigo-400 tracking-widest block mb-3">Invite Friends</span>
                    <div className="flex flex-col gap-1.5 max-h-[150px] overflow-y-auto custom-scroll pr-1">
                       {user.friends?.filter(fid => !activeGroup.members.includes(fid)).length === 0 ? (
-                        <p className="text-[7px] text-slate-700 italic uppercase">All friends are in lab</p>
+                        <p className="text-[7px] text-slate-700 italic uppercase font-bold text-center py-2">No invites available</p>
                       ) : (
                         user.friends?.filter(fid => !activeGroup.members.includes(fid)).map(fid => {
                            const friend = allUsers.find(u => u.id === fid);
                            return friend ? (
                               <button key={fid} onClick={() => handleAddMemberToGroup(fid)} className="flex items-center justify-between p-2 rounded-xl bg-indigo-600/5 hover:bg-indigo-600/10 transition-all group/f">
                                  <div className="flex items-center gap-2">
-                                    <img src={friend.avatar} className="w-6 h-6 rounded-lg" />
-                                    <span className="text-[9px] font-bold text-white uppercase">{friend.username}</span>
+                                    <img src={friend.avatar} className="w-5 h-5 rounded-lg" />
+                                    <span className="text-[8px] font-bold text-white uppercase">{friend.username}</span>
                                  </div>
                                  <Icons.Plus />
                               </button>
@@ -884,25 +933,18 @@ export default function App() {
                 </div>
               )}
 
-              <div className="space-y-2.5 mb-6 max-h-[300px] overflow-y-auto custom-scroll pr-2">
+              <div className="space-y-1.5 mb-6 max-h-[300px] overflow-y-auto custom-scroll pr-2">
                 {allUsers.filter(u => activeGroup?.members?.includes(u.id)).map(m => (
-                  <div key={m.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
-                    <div className="flex items-center gap-3">
-                      <img src={m.avatar} className="w-8 h-8 rounded-lg" />
+                  <div key={m.id} className="flex items-center justify-between p-2.5 rounded-2xl bg-white/5 border border-white/5">
+                    <div className="flex items-center gap-3 cursor-pointer" onClick={() => { setShowAbout(false); setProfileUserId(m.id); }}>
+                      <img src={m.avatar} className="w-7 h-7 rounded-lg" />
                       <div className="flex flex-col">
-                        <span className="text-[10px] font-black uppercase text-white italic">{m.username}</span>
-                        {activeGroup?.ownerId === m.id && <span className="text-[7px] text-indigo-500 font-bold uppercase tracking-widest">Admin</span>}
+                        <span className="text-[9px] font-black uppercase text-white italic">{m.username}</span>
+                        {activeGroup?.ownerId === m.id && <span className="text-[6px] text-indigo-500 font-bold uppercase tracking-widest">Admin</span>}
                       </div>
                     </div>
                     {user.id === activeGroup?.ownerId && m.id !== user.id && (
-                      <div className="flex gap-2">
-                        {activeGroup.mutedMembers?.includes(m.id) ? (
-                          <button onClick={() => handleAdminAction(m.id, 'unmute')} className="text-[8px] font-black text-emerald-500 uppercase px-2 py-1 bg-emerald-500/10 rounded">Unmute</button>
-                        ) : (
-                          <button onClick={() => handleAdminAction(m.id, 'mute')} className="text-[8px] font-black text-amber-500 uppercase px-2 py-1 bg-amber-500/10 rounded">Mute</button>
-                        )}
-                        <button onClick={() => handleAdminAction(m.id, 'kick')} className="text-[8px] font-black text-rose-500 uppercase px-2 py-1 bg-rose-500/10 rounded">Kick</button>
-                      </div>
+                      <button onClick={() => handleAdminAction(m.id, 'kick')} className="text-[7px] font-black text-rose-500 uppercase px-2 py-1 bg-rose-500/10 rounded-lg hover:bg-rose-600 hover:text-white transition-all">Kick</button>
                     )}
                   </div>
                 ))}
@@ -912,18 +954,18 @@ export default function App() {
       )}
 
       {selectedFile && (
-        <div className="fixed inset-0 bg-black/95 z-[1000] flex flex-col items-center justify-center p-10" onClick={() => setSelectedFile(null)}>
+        <div className="fixed inset-0 bg-black/95 z-[2000] flex flex-col items-center justify-center p-10" onClick={() => setSelectedFile(null)}>
            <button onClick={() => setSelectedFile(null)} className="absolute top-10 right-10 p-4 bg-white/5 text-white rounded-full hover:bg-rose-600 transition-all z-50"><Icons.X /></button>
-           <div className="max-w-4xl w-full max-h-[80vh] flex items-center justify-center rounded-3xl overflow-hidden shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
+           <div className="max-w-4xl w-full max-h-[80vh] flex items-center justify-center rounded-[40px] overflow-hidden shadow-2xl border border-white/5 bg-black/40" onClick={e => e.stopPropagation()}>
               {selectedFile.type.startsWith('image/') ? (
                  <img src={selectedFile.url} className="max-w-full max-h-full object-contain" />
               ) : selectedFile.type.startsWith('video/') ? (
                  <video src={selectedFile.url} className="max-w-full max-h-full" controls autoPlay />
               ) : (
-                <div className="bg-[#121216] p-12 rounded-3xl w-full max-w-md text-center">
+                <div className="p-12 text-center">
                   <div className="w-16 h-16 bg-indigo-600/20 text-indigo-500 rounded-2xl flex items-center justify-center mx-auto mb-6"><Icons.File /></div>
-                  <p className="text-white font-black text-sm mb-8 uppercase tracking-widest italic truncate">{selectedFile.name}</p>
-                  <a href={selectedFile.url} download={selectedFile.name} className="inline-block px-10 py-4 bg-indigo-600 text-white rounded-xl font-black uppercase tracking-widest text-xs hover:bg-indigo-500 shadow-xl shadow-indigo-600/20">Download File</a>
+                  <p className="text-white font-black text-[12px] mb-8 uppercase tracking-widest italic truncate">{selectedFile.name}</p>
+                  <a href={selectedFile.url} download={selectedFile.name} className="inline-block px-10 py-4 bg-indigo-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-indigo-500 shadow-xl shadow-indigo-600/20">Download Asset</a>
                 </div>
               )}
            </div>
@@ -931,7 +973,7 @@ export default function App() {
       )}
       
       {toast && (
-        <div className={`fixed bottom-10 left-1/2 -translate-x-1/2 z-[2000] px-6 py-3 rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-2xl animate-in slide-in-from-bottom-4 ${toast.t === 'err' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'}`}>
+        <div className={`fixed bottom-10 left-1/2 -translate-x-1/2 z-[3000] px-5 py-2.5 rounded-2xl font-black uppercase text-[8px] tracking-[0.2em] shadow-2xl animate-in slide-in-from-bottom-4 ${toast.t === 'err' ? 'bg-rose-600 text-white shadow-rose-600/20' : 'bg-emerald-600 text-white shadow-emerald-600/20'}`}>
           {toast.m}
         </div>
       )}
@@ -939,7 +981,7 @@ export default function App() {
   );
 }
 
-const MessageComponent = ({ msg, me, isAdmin, onReply, onReact, onDelete, onEdit, onAddFriend }: any) => {
+const MessageComponent = ({ msg, me, isAdmin, onAvatarClick, onReply, onReact, onDelete, onEdit }: any) => {
   const [showMenu, setShowMenu] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(msg.text);
@@ -951,33 +993,32 @@ const MessageComponent = ({ msg, me, isAdmin, onReply, onReact, onDelete, onEdit
     setShowMenu(false);
   };
 
-  const isFriend = me.friends?.includes(msg.senderId);
-
   return (
     <div className={`flex gap-3 group/msg ${msg.senderId === me.id ? 'flex-row-reverse' : ''}`} onClick={() => setShowMenu(!showMenu)}>
       <div className="relative shrink-0">
-        <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-lg bg-black border border-white/5" />
-        {msg.senderId !== me.id && !me.isGuest && !isFriend && msg.senderId !== 'system' && (
-          <button onClick={(e) => { e.stopPropagation(); onAddFriend(); }} className="absolute -top-1 -right-1 p-0.5 bg-indigo-600 rounded-full scale-0 group-hover/msg:scale-100 transition-all text-white shadow-lg"><Icons.Plus /></button>
-        )}
+        <img 
+          src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} 
+          className="w-8 h-8 rounded-lg bg-black border border-white/5 cursor-pointer hover:scale-110 transition-transform" 
+          onClick={(e) => { e.stopPropagation(); onAvatarClick(); }}
+        />
       </div>
-      <div className={`flex flex-col max-w-[75%] relative ${msg.senderId === me.id ? 'items-end' : 'items-start ml-2'}`}>
-        <span className="text-[8px] font-black uppercase tracking-[0.2em] mb-1 px-1 opacity-40 italic">
-          {msg.senderName} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} {msg.isEdited && "(edited)"}
+      <div className={`flex flex-col max-w-[75%] relative ${msg.senderId === me.id ? 'items-end' : 'items-start ml-1'}`}>
+        <span className="text-[7px] font-black uppercase tracking-[0.1em] mb-1 px-1 opacity-20 italic">
+          {msg.senderName} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} {msg.isEdited && "(MODIFIED)"}
         </span>
         
-        <div className={`p-2.5 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none mr-2' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
+        <div className={`p-2.5 px-4 rounded-2xl text-[12px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
           {isEditing ? (
             <div className="flex flex-col gap-2 min-w-[200px]">
               <textarea 
-                className="bg-black/20 border border-white/10 rounded p-2 text-inherit outline-none resize-none" 
+                className="bg-black/20 border border-white/10 rounded p-2 text-inherit outline-none resize-none text-[12px]" 
                 value={editText} 
                 onChange={e => setEditText(e.target.value)}
                 onClick={e => e.stopPropagation()}
               />
               <div className="flex gap-2 justify-end">
-                <button onClick={(e) => { e.stopPropagation(); setIsEditing(false); }} className="text-[10px] font-bold uppercase">Cancel</button>
-                <button onClick={(e) => { e.stopPropagation(); handleSave(); }} className="text-[10px] font-bold uppercase underline">Save</button>
+                <button onClick={(e) => { e.stopPropagation(); setIsEditing(false); }} className="text-[8px] font-bold uppercase">Cancel</button>
+                <button onClick={(e) => { e.stopPropagation(); handleSave(); }} className="text-[8px] font-bold uppercase underline">Save</button>
               </div>
             </div>
           ) : (
@@ -988,8 +1029,8 @@ const MessageComponent = ({ msg, me, isAdmin, onReply, onReact, onDelete, onEdit
         {msg.reactions && msg.reactions.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-1.5">
             {msg.reactions.map((r: Reaction) => (
-              <button key={r.emoji} onClick={(e) => { e.stopPropagation(); onReact(msg.id, r.emoji); }} className={`px-2 py-0.5 rounded-full text-[9px] bg-white/5 border border-white/10 flex items-center gap-1 transition-all hover:bg-white/10 ${r.userIds.includes(me.id) ? 'bg-indigo-600/20 border-indigo-500 shadow-lg shadow-indigo-500/10' : ''}`}>
-                <span>{r.emoji}</span> <span className="font-bold opacity-60">{r.userIds.length}</span>
+              <button key={r.emoji} onClick={(e) => { e.stopPropagation(); onReact(msg.id, r.emoji); }} className={`px-2 py-0.5 rounded-full text-[8px] bg-white/5 border border-white/10 flex items-center gap-1 transition-all hover:bg-white/10 ${r.userIds.includes(me.id) ? 'bg-indigo-600/20 border-indigo-500' : ''}`}>
+                <span>{r.emoji}</span> <span className="font-bold opacity-40">{r.userIds.length}</span>
               </button>
             ))}
           </div>
@@ -997,16 +1038,16 @@ const MessageComponent = ({ msg, me, isAdmin, onReply, onReact, onDelete, onEdit
 
         {showMenu && !isEditing && (
           <div className={`absolute -top-12 flex flex-col bg-[#1a1a20] border border-white/10 rounded-2xl p-1 shadow-2xl z-50 animate-in zoom-in-95 ${msg.senderId === me.id ? 'right-0' : 'left-0'}`}>
-            <div className="flex items-center gap-0.5 p-1 scrollbar-hide">
+            <div className="flex items-center gap-0.5 p-1">
               {EMOJIS.map(e => (
-                <button key={e} onClick={(e_sub) => { e_sub.stopPropagation(); onReact(msg.id, e); setShowMenu(false); }} className="p-1.5 hover:bg-white/10 rounded-lg text-sm transition-transform active:scale-150">{e}</button>
+                <button key={e} onClick={(e_sub) => { e_sub.stopPropagation(); onReact(msg.id, e); setShowMenu(false); }} className="p-1 hover:bg-white/10 rounded text-xs transition-transform active:scale-125">{e}</button>
               ))}
             </div>
-            <div className="h-px bg-white/5 w-full my-1"></div>
-            <div className="flex justify-between px-2 py-1 gap-2">
-              <button onClick={(e) => { e.stopPropagation(); onReply(); setShowMenu(false); }} className="text-indigo-400 p-1.5 hover:bg-indigo-500/10 rounded-lg" title="Reply"><Icons.Reply /></button>
-              {msg.senderId === me.id && <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="text-indigo-400 p-1.5 hover:bg-indigo-500/10 rounded-lg" title="Edit"><Icons.Edit /></button>}
-              {(msg.senderId === me.id || isAdmin) && <button onClick={(e) => { e.stopPropagation(); onDelete(); setShowMenu(false); }} className="text-rose-500 p-1.5 hover:bg-rose-500/10 rounded-lg" title="Delete"><Icons.Trash /></button>}
+            <div className="h-px bg-white/5 w-full my-0.5"></div>
+            <div className="flex justify-between px-1.5 py-1 gap-1.5">
+              <button onClick={(e) => { e.stopPropagation(); onReply(); setShowMenu(false); }} className="text-slate-400 p-1 hover:bg-white/5 rounded-lg" title="Reply"><Icons.Reply /></button>
+              {msg.senderId === me.id && <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="text-slate-400 p-1 hover:bg-white/5 rounded-lg" title="Edit"><Icons.Edit /></button>}
+              {(msg.senderId === me.id || isAdmin) && <button onClick={(e) => { e.stopPropagation(); onDelete(); setShowMenu(false); }} className="text-rose-500 p-1 hover:bg-rose-500/10 rounded-lg" title="Delete"><Icons.Trash /></button>}
             </div>
           </div>
         )}
@@ -1019,9 +1060,9 @@ const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean }> =
   const [text, setText] = useState('');
   const handleSend = () => { if(text.trim() && !disabled) { onSend(text); setText(''); } };
   return (
-    <div className={`flex-1 flex items-end gap-2 bg-[#0f0f12] border border-white/5 rounded-2xl p-2 focus-within:border-indigo-500/40 transition-all ${disabled ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}>
-      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "Access Denied" : "Type something..."} className="flex-1 bg-transparent py-2.5 px-4 text-[13px] outline-none resize-none text-white placeholder:text-slate-700 font-medium custom-scroll" />
-      <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-3 rounded-xl transition-all shadow-xl active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700'}`}><Icons.Send /></button>
+    <div className={`flex-1 flex items-end gap-2 bg-[#0f0f12] border border-white/5 rounded-2xl p-1.5 focus-within:border-indigo-500/30 transition-all ${disabled ? 'opacity-20 grayscale' : ''}`}>
+      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "MUTED" : "SIGNAL..."} className="flex-1 bg-transparent py-2 px-3 text-[12px] outline-none resize-none text-white placeholder:text-slate-800 font-bold uppercase italic custom-scroll" />
+      <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-3 rounded-xl transition-all shadow-lg active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white' : 'bg-white/5 text-slate-800'}`}><Icons.Send /></button>
     </div>
   );
 };
@@ -1041,29 +1082,29 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, canDelete: boolean,
 
   return (
     <div className="bg-[#121216] border border-white/5 rounded-2xl overflow-hidden shadow-xl group animate-in zoom-in-95 border-l-2 border-indigo-600 relative">
-      <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-        <button onClick={(e) => { e.stopPropagation(); onDownload(); }} className="p-1.5 bg-indigo-600 text-white rounded-lg shadow-lg hover:bg-indigo-500" title="Instant Download"><Icons.Download /></button>
+      <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+        <button onClick={(e) => { e.stopPropagation(); onDownload(); }} className="p-1.5 bg-indigo-600 text-white rounded-lg shadow-lg hover:bg-indigo-500 scale-90" title="Get"><Icons.Download /></button>
         {canDelete && (
-          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1.5 bg-rose-600/80 text-white rounded-lg hover:bg-rose-600" title="Remove"><Icons.X /></button>
+          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1.5 bg-rose-600 text-white rounded-lg hover:bg-rose-500 scale-90" title="Delete"><Icons.X /></button>
         )}
       </div>
       <div className="cursor-pointer aspect-video bg-black flex items-center justify-center relative overflow-hidden" onClick={onPreview}>
          {isImg && imgUrl ? (
-            <img src={imgUrl} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
+            <img src={imgUrl} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" />
          ) : isImg ? (
-            <div className="text-slate-800 scale-150"><Icons.Sparkles /></div>
+            <div className="text-slate-900 scale-125"><Icons.Sparkles /></div>
          ) : (
-            <div className="text-slate-800"><Icons.File /></div>
+            <div className="text-slate-900"><Icons.File /></div>
          )}
-         <div className="absolute inset-0 flex items-center justify-center bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity">
-            <span className="text-[9px] font-black text-white uppercase tracking-widest bg-black/50 px-3 py-1.5 rounded-full">Open</span>
+         <div className="absolute inset-0 flex items-center justify-center bg-indigo-600/10 opacity-0 group-hover:opacity-100 transition-opacity">
+            <span className="text-[7px] font-black text-white uppercase tracking-widest bg-black/60 px-3 py-1.5 rounded-full">OPEN SIGNAL</span>
          </div>
       </div>
-      <div className="p-3">
-        <p className="text-[10px] font-black text-white truncate uppercase tracking-tighter italic">{file.name}</p>
+      <div className="p-2.5">
+        <p className="text-[9px] font-black text-white truncate uppercase tracking-tighter italic">{file.name}</p>
         <div className="flex items-center justify-between mt-1">
-          <span className="text-[8px] font-black text-indigo-500 uppercase">{(file.size / 1024 / 1024).toFixed(1)}MB</span>
-          <span className="text-[8px] text-slate-600 font-bold uppercase italic truncate ml-2">by {sender}</span>
+          <span className="text-[7px] font-black text-indigo-500 uppercase">{(file.size / 1024 / 1024).toFixed(1)}MB</span>
+          <span className="text-[7px] text-slate-700 font-bold uppercase italic truncate ml-2">SRC: {sender}</span>
         </div>
       </div>
     </div>
