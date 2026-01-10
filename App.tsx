@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { User, Group, Message, SharedFile, Reaction } from './types';
 import { PLAN_LIMITS, EXPIRY_DURATION, Icons, CHAT_COLORS, getContrastColor, EMOJIS } from './constants';
@@ -184,8 +183,8 @@ export default function App() {
   const [toast, setToast] = useState<{ m: string; t: 'ok' | 'err' } | null>(null);
   const [showAbout, setShowAbout] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  const [friendSearch, setFriendSearch] = useState('');
   const [selectedFile, setSelectedFile] = useState<SharedFile | null>(null);
   const [lastSentTime, setLastSentTime] = useState(0);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -209,7 +208,6 @@ export default function App() {
     const users: User[] = getFromStorage('cl_users') || [];
     const allGroups: Group[] = getFromStorage('cl_groups') || [];
     
-    // Update local user state if changed in storage (like new friends)
     const freshMe = users.find(u => u.id === user.id);
     if (freshMe && JSON.stringify(freshMe) !== JSON.stringify(user)) {
       setUser(freshMe);
@@ -262,7 +260,7 @@ export default function App() {
   useEffect(() => {
     const sync = (e: StorageEvent) => fetchData();
     window.addEventListener('storage', sync);
-    const interval = setInterval(fetchData, 1000);
+    const interval = setInterval(fetchData, 1500);
     return () => {
       window.removeEventListener('storage', sync);
       clearInterval(interval);
@@ -326,7 +324,6 @@ export default function App() {
   const handleSendMessage = async (text: string, file?: File) => {
     if (!user || !activeGroupId) return;
     if (activeGroup?.mutedMembers?.includes(user.id)) { showToast("Muted!", "err"); return; }
-    if (activeGroupId === 'live-space' && Date.now() - lastSentTime < 1000) { showToast("Wait...", 'err'); return; }
     
     let sharedFile: SharedFile | undefined;
     if (file) {
@@ -372,23 +369,6 @@ export default function App() {
     }
   };
 
-  const handleCallAction = (action: 'join' | 'leave') => {
-    if (!user || !activeGroupId) return;
-    const all: Group[] = getFromStorage('cl_groups') || [];
-    const idx = all.findIndex(g => g.id === activeGroupId);
-    if (idx > -1) {
-      let inCall = all[idx].inCall || [];
-      if (action === 'join') {
-        if (!inCall.includes(user.id)) inCall = [...inCall, user.id];
-      } else {
-        inCall = inCall.filter(uid => uid !== user.id);
-      }
-      all[idx].inCall = inCall;
-      saveToStorage('cl_groups', all);
-      fetchData();
-    }
-  };
-
   const handleAdminAction = (targetId: string, action: 'kick' | 'mute' | 'unmute') => {
     if (!user || !activeGroup || activeGroup.ownerId !== user.id) return;
     const all: Group[] = getFromStorage('cl_groups') || [];
@@ -407,6 +387,27 @@ export default function App() {
     }
   };
 
+  // Fix: Implement missing handleCallAction to manage group call membership status
+  const handleCallAction = (action: 'join' | 'leave') => {
+    if (!user || !activeGroupId) return;
+    const all: Group[] = getFromStorage('cl_groups') || [];
+    const idx = all.findIndex(g => g.id === activeGroupId);
+    if (idx > -1) {
+      const inCall = all[idx].inCall || [];
+      if (action === 'join') {
+        if (!inCall.includes(user.id)) {
+          all[idx].inCall = [...inCall, user.id];
+          sendSystemMessage(activeGroupId, `${user.username} joined the call.`);
+        }
+      } else {
+        all[idx].inCall = inCall.filter(id => id !== user.id);
+        sendSystemMessage(activeGroupId, `${user.username} left the call.`);
+      }
+      saveToStorage('cl_groups', all);
+      fetchData();
+    }
+  };
+
   const handleSocialAction = (targetId: string, action: 'request' | 'accept' | 'deny') => {
     if (!user) return;
     const users: User[] = getFromStorage('cl_users') || [];
@@ -416,11 +417,15 @@ export default function App() {
     if (meIdx > -1 && targetIdx > -1) {
       if (action === 'request') {
         const requests = users[targetIdx].friendRequests || [];
-        if (!requests.includes(user.id)) users[targetIdx].friendRequests = [...requests, user.id];
+        if (!requests.includes(user.id)) {
+           users[targetIdx].friendRequests = [...requests, user.id];
+           showToast("Request Sent!");
+        }
       } else if (action === 'accept') {
         users[meIdx].friendRequests = (users[meIdx].friendRequests || []).filter(id => id !== targetId);
         users[meIdx].friends = [...(users[meIdx].friends || []), targetId];
         users[targetIdx].friends = [...(users[targetIdx].friends || []), user.id];
+        showToast("Friend Added!");
       } else if (action === 'deny') {
         users[meIdx].friendRequests = (users[meIdx].friendRequests || []).filter(id => id !== targetId);
       }
@@ -473,59 +478,128 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#050505] text-slate-300 overflow-hidden font-sans select-none">
-      {/* SIDEBAR */}
-      <div className="w-[280px] bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0 z-30 shadow-2xl">
-        <div className="p-6 border-b border-white/5 flex items-center justify-between">
-          <span className="font-black text-[10px] uppercase tracking-[0.2em] text-indigo-400 italic">WORKSPACE</span>
-          {!user.isGuest && (
-            <div className="flex gap-2">
-              <button onClick={() => showToast("Inbox Coming Soon")} className="p-2 bg-white/5 text-slate-500 rounded-lg hover:text-white transition-all"><Icons.Reply /></button>
-              <button onClick={() => setShowCreateGroup(true)} className="p-2 bg-indigo-500/10 text-indigo-500 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"><Icons.Plus /></button>
-            </div>
-          )}
+      
+      {/* 1. SOCIAL SIDEBAR (Far Left) */}
+      <div className="w-[180px] bg-[#0a0a0c] border-r border-white/5 flex flex-col shrink-0 z-40">
+        <div className="p-6 border-b border-white/5">
+           <span className="font-black text-[9px] uppercase tracking-[0.2em] text-indigo-400 italic">SOCIAL</span>
         </div>
         
-        <div className="flex-1 overflow-y-auto p-3 space-y-1.5 custom-scroll">
-          {/* LOGGED IN SOCIAL SECTION */}
-          {!user.isGuest && (
-            <div className="mb-6 px-1">
-              <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest block mb-4">Connections</span>
-              <div className="space-y-1">
+        <div className="flex-1 overflow-y-auto custom-scroll p-4 space-y-8">
+           {/* Inbox */}
+           {!user.isGuest && (
+             <div>
+                <span className="text-[8px] font-black uppercase text-slate-600 tracking-widest block mb-4">Inbox</span>
+                <div className="space-y-2">
+                   {(user.friendRequests || []).length === 0 ? (
+                      <p className="text-[7px] text-slate-800 italic uppercase font-bold">Empty</p>
+                   ) : (
+                      user.friendRequests?.map(id => {
+                        const requester = allUsers.find(au => au.id === id);
+                        return requester ? (
+                          <div key={id} className="bg-white/5 p-2 rounded-xl flex items-center justify-between group">
+                            <img src={requester.avatar} className="w-6 h-6 rounded-lg" />
+                            <div className="flex gap-1">
+                               <button onClick={() => handleSocialAction(id, 'accept')} className="p-1.5 text-indigo-500 hover:bg-indigo-600 hover:text-white rounded-lg transition-all"><Icons.Plus /></button>
+                               <button onClick={() => handleSocialAction(id, 'deny')} className="p-1.5 text-rose-500 hover:bg-rose-600 hover:text-white rounded-lg transition-all"><Icons.X /></button>
+                            </div>
+                          </div>
+                        ) : null;
+                      })
+                   )}
+                </div>
+             </div>
+           )}
+
+           {/* Friends List */}
+           <div>
+              <span className="text-[8px] font-black uppercase text-slate-600 tracking-widest block mb-4">Friends</span>
+              <div className="space-y-2">
                  {user.friends?.length === 0 ? (
-                    <p className="text-[8px] text-slate-700 italic px-2">No friends added yet.</p>
+                    <p className="text-[7px] text-slate-800 italic uppercase font-bold">No friends</p>
                  ) : (
-                    user.friends.map(fId => {
+                    user.friends?.map(fId => {
                       const friend = allUsers.find(u => u.id === fId);
                       if (!friend) return null;
                       return (
-                        <div key={fId} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer group transition-all">
+                        <div key={fId} className="flex flex-col items-center gap-2 p-2 rounded-xl hover:bg-white/5 transition-all cursor-pointer group">
                           <div className="relative">
-                            <img src={friend.avatar} className="w-8 h-8 rounded-lg" />
-                            {isOnline(friend) && <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border-2 border-[#0f0f12]"></div>}
+                            <img src={friend.avatar} className="w-10 h-10 rounded-2xl grayscale group-hover:grayscale-0 transition-all border border-white/5" />
+                            {isOnline(friend) && <div className="absolute -bottom-1 -right-1 w-3 h-3 rounded-full bg-emerald-500 border-2 border-[#0a0a0c]"></div>}
                           </div>
-                          <div className="flex-1 overflow-hidden">
-                             <p className="text-[10px] font-bold truncate uppercase">{friend.username}</p>
-                          </div>
+                          <span className="text-[9px] font-black uppercase text-slate-400 group-hover:text-white truncate w-full text-center">{friend.username}</span>
                         </div>
                       );
                     })
                  )}
               </div>
+           </div>
+
+           {/* Add Friend */}
+           {!user.isGuest && (
+             <div className="pt-4 border-t border-white/5">
+                <span className="text-[8px] font-black uppercase text-slate-600 tracking-widest block mb-4">Find User</span>
+                <input 
+                  type="text" 
+                  placeholder="USERNAME..." 
+                  className="w-full bg-white/5 border border-white/5 rounded-lg px-2 py-2 text-[9px] outline-none focus:border-indigo-500 transition-all uppercase font-bold" 
+                  value={friendSearch} 
+                  onChange={e => setFriendSearch(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                       const target = allUsers.find(u => u.username.toLowerCase() === friendSearch.toLowerCase() && !u.isGuest && u.id !== user.id);
+                       if (target) { handleSocialAction(target.id, 'request'); setFriendSearch(''); }
+                       else showToast("User not found", "err");
+                    }
+                  }}
+                />
+             </div>
+           )}
+        </div>
+      </div>
+
+      {/* 2. WORKSPACE SIDEBAR (Middle) */}
+      <div className="w-[240px] bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0 z-30 shadow-2xl">
+        <div className="p-6 border-b border-white/5 flex items-center justify-between">
+          <span className="font-black text-[10px] uppercase tracking-[0.2em] text-indigo-400 italic">WORKSPACE</span>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-3 space-y-6 custom-scroll">
+          <div>
+            <button onClick={() => handleSwitchGroup('live-space')} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
+              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
+              <span className="text-[10px] font-black uppercase tracking-widest italic">Live Hub</span>
+            </button>
+          </div>
+
+          <div>
+             <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest block mb-4 px-1">Research Labs</span>
+             <div className="space-y-1.5">
+                {groups.filter(g => g.id !== 'live-space').map(g => (
+                  <button key={g.id} onClick={() => handleSwitchGroup(g.id)} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
+                    <div className="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
+                    <span className="text-[10px] font-black truncate uppercase tracking-tighter italic">{g.name}</span>
+                  </button>
+                ))}
+             </div>
+          </div>
+
+          {!user.isGuest && (
+            <div className="pt-4 border-t border-white/5">
+              <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest block mb-4 px-1">Start New Lab</span>
+              <div className="flex flex-col gap-2">
+                <input 
+                  type="text" 
+                  placeholder="LAB NAME..." 
+                  className="w-full bg-white/5 border border-white/5 rounded-xl px-4 py-3 text-[10px] outline-none focus:border-indigo-500 transition-all font-bold uppercase italic"
+                  value={newGroupName}
+                  onChange={e => setNewGroupName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleCreateGroup()}
+                />
+                <button onClick={handleCreateGroup} className="w-full py-3 bg-indigo-600/10 text-indigo-500 rounded-xl font-black uppercase text-[10px] hover:bg-indigo-600 hover:text-white transition-all">Create +</button>
+              </div>
             </div>
           )}
-
-          <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest block mb-4 px-1">Research Labs</span>
-          <button onClick={() => handleSwitchGroup('live-space')} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
-            <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
-            <span className="text-[10px] font-black uppercase tracking-widest italic">Live Hub</span>
-          </button>
-          
-          {groups.filter(g => g.id !== 'live-space').map(g => (
-            <button key={g.id} onClick={() => handleSwitchGroup(g.id)} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
-              <div className="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
-              <span className="text-[10px] font-black truncate uppercase tracking-tighter">{g.name}</span>
-            </button>
-          ))}
         </div>
 
         <div className="p-4 bg-black/40 border-t border-white/5">
@@ -540,7 +614,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* WORKSPACE */}
+      {/* 3. WORKSPACE (Main) */}
       <div className="flex-1 flex flex-col relative bg-[#050505]">
         {!activeGroup ? (
           <div className="flex-1 flex flex-col items-center justify-center opacity-10">
@@ -569,11 +643,13 @@ export default function App() {
                </div>
                
                <div className="flex items-center gap-6">
-                  {/* TABS */}
-                  <div className="flex bg-white/5 rounded-xl p-1 border border-white/5">
-                    <button onClick={() => setActiveTab('chat')} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Chat</button>
-                    <button onClick={() => setActiveTab('ask')} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === 'ask' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Ask Feedback</button>
-                  </div>
+                  {/* TABS (ONLY LIVE HUB) */}
+                  {activeGroupId === 'live-space' && (
+                    <div className="flex bg-white/5 rounded-xl p-1 border border-white/5">
+                      <button onClick={() => setActiveTab('chat')} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Chat</button>
+                      <button onClick={() => setActiveTab('ask')} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === 'ask' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Ask Feedback</button>
+                    </div>
+                  )}
 
                   {activeGroupId === 'live-space' ? (
                      <div className="flex items-center gap-2">
@@ -673,14 +749,14 @@ export default function App() {
                 )}
               </div>
 
-              {/* ASSET LAB */}
+              {/* ASSET LAB (Files) */}
               {activeGroupId !== 'live-space' && (
-                <div className="w-[340px] bg-[#0a0a0c] border-l border-white/5 flex flex-col shrink-0">
+                <div className="w-[300px] bg-[#0a0a0c] border-l border-white/5 flex flex-col shrink-0">
                   <div className="p-5 border-b border-white/5 bg-indigo-600/5">
                      <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest italic">CALL LAB</span>
                      <div className="mt-4 space-y-2">
                         {usersInCall.map(u => (
-                          <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${Math.random() > 0.6 ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30' : 'bg-white/5'}`}>
+                          <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${Math.random() > 0.6 ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.1)]' : 'bg-white/5'}`}>
                             <img src={u.avatar} className={`w-7 h-7 rounded-lg ${Math.random() > 0.6 ? 'ring-2 ring-emerald-500 animate-pulse' : ''}`} />
                             <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{u.username}</span>
                           </div>
@@ -723,16 +799,6 @@ export default function App() {
       </div>
 
       {/* MODALS */}
-      {showCreateGroup && (
-        <div className="fixed inset-0 bg-black/90 z-[500] flex items-center justify-center p-6" onClick={() => setShowCreateGroup(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 p-8 rounded-3xl w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
-              <h3 className="text-lg font-black text-white italic uppercase tracking-tighter mb-6 text-center">New Lab</h3>
-              <input type="text" placeholder="Lab Name..." className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white font-bold mb-4" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} />
-              <button onClick={() => { handleCreateGroup(); setShowCreateGroup(false); }} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-600/20">Create Lab</button>
-           </div>
-        </div>
-      )}
-
       {showProfile && user && (
         <div className="fixed inset-0 bg-black/95 z-[500] flex items-center justify-center p-6" onClick={() => setShowProfile(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-md p-10 shadow-2xl animate-in zoom-in-95 overflow-hidden relative" onClick={e => e.stopPropagation()}>
@@ -751,29 +817,6 @@ export default function App() {
                       <span className="text-[10px] font-black uppercase text-slate-500">Member Since</span>
                       <span className="text-[10px] font-black uppercase text-white">FEB 2025</span>
                    </div>
-                   
-                   {!user.isGuest && user.friendRequests && user.friendRequests.length > 0 && (
-                      <div className="pt-6">
-                        <span className="text-[9px] font-black uppercase text-indigo-500 tracking-widest block mb-4">Pending Requests</span>
-                        <div className="space-y-2">
-                           {user.friendRequests.map(id => {
-                              const requester = allUsers.find(au => au.id === id);
-                              return requester ? (
-                                <div key={id} className="flex items-center justify-between bg-white/5 p-3 rounded-2xl">
-                                   <div className="flex items-center gap-3">
-                                      <img src={requester.avatar} className="w-8 h-8 rounded-lg" />
-                                      <span className="text-[10px] font-black uppercase">{requester.username}</span>
-                                   </div>
-                                   <div className="flex gap-2">
-                                      <button onClick={() => handleSocialAction(id, 'accept')} className="p-2 bg-indigo-600 rounded-lg text-white"><Icons.Plus /></button>
-                                      <button onClick={() => handleSocialAction(id, 'deny')} className="p-2 bg-white/5 rounded-lg text-rose-500"><Icons.X /></button>
-                                   </div>
-                                </div>
-                              ) : null;
-                           })}
-                        </div>
-                      </div>
-                   )}
                  </div>
                  
                  <button onClick={() => setShowProfile(false)} className="w-full py-4 mt-8 bg-white text-black rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all">Close Profile</button>
@@ -811,10 +854,6 @@ export default function App() {
                     )}
                   </div>
                 ))}
-              </div>
-              <div className="p-4 bg-indigo-600/5 rounded-2xl border border-indigo-500/10">
-                 <p className="text-[9px] font-black uppercase text-indigo-400 italic tracking-[0.2em]">Lab Status</p>
-                 <p className="text-[9px] font-bold text-slate-500 mt-1">This space is ephemeral. Messages and files self-destruct after 60 minutes.</p>
               </div>
            </div>
         </div>
@@ -864,18 +903,18 @@ const MessageComponent = ({ msg, me, isAdmin, onReply, onReact, onDelete, onEdit
 
   return (
     <div className={`flex gap-3 group/msg ${msg.senderId === me.id ? 'flex-row-reverse' : ''}`} onClick={() => setShowMenu(!showMenu)}>
-      <div className="relative">
-        <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-lg bg-black shrink-0 border border-white/5" />
+      <div className="relative shrink-0">
+        <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-lg bg-black border border-white/5" />
         {msg.senderId !== me.id && !me.isGuest && !isFriend && msg.senderId !== 'system' && (
-          <button onClick={(e) => { e.stopPropagation(); onAddFriend(); }} className="absolute -top-1 -right-1 p-0.5 bg-indigo-600 rounded-full scale-0 group-hover/msg:scale-100 transition-all text-white"><Icons.Plus /></button>
+          <button onClick={(e) => { e.stopPropagation(); onAddFriend(); }} className="absolute -top-1 -right-1 p-0.5 bg-indigo-600 rounded-full scale-0 group-hover/msg:scale-100 transition-all text-white shadow-lg"><Icons.Plus /></button>
         )}
       </div>
-      <div className={`flex flex-col max-w-[75%] relative ${msg.senderId === me.id ? 'items-end' : 'items-start ml-1'}`}>
+      <div className={`flex flex-col max-w-[75%] relative ${msg.senderId === me.id ? 'items-end' : 'items-start ml-2'}`}>
         <span className="text-[8px] font-black uppercase tracking-[0.2em] mb-1 px-1 opacity-40 italic">
           {msg.senderName} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} {msg.isEdited && "(edited)"}
         </span>
         
-        <div className={`p-2.5 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none mr-1' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
+        <div className={`p-2.5 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
           {isEditing ? (
             <div className="flex flex-col gap-2 min-w-[200px]">
               <textarea 
@@ -897,7 +936,7 @@ const MessageComponent = ({ msg, me, isAdmin, onReply, onReact, onDelete, onEdit
         {msg.reactions && msg.reactions.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-1.5">
             {msg.reactions.map((r: Reaction) => (
-              <button key={r.emoji} onClick={(e) => { e.stopPropagation(); onReact(msg.id, r.emoji); }} className={`px-2 py-0.5 rounded-full text-[9px] bg-white/5 border border-white/10 flex items-center gap-1 transition-all hover:bg-white/10 ${r.userIds.includes(me.id) ? 'bg-indigo-600/20 border-indigo-500' : ''}`}>
+              <button key={r.emoji} onClick={(e) => { e.stopPropagation(); onReact(msg.id, r.emoji); }} className={`px-2 py-0.5 rounded-full text-[9px] bg-white/5 border border-white/10 flex items-center gap-1 transition-all hover:bg-white/10 ${r.userIds.includes(me.id) ? 'bg-indigo-600/20 border-indigo-500 shadow-lg shadow-indigo-500/10' : ''}`}>
                 <span>{r.emoji}</span> <span className="font-bold opacity-60">{r.userIds.length}</span>
               </button>
             ))}
@@ -936,7 +975,18 @@ const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean }> =
 };
 
 const FileItem: React.FC<{ file: SharedFile, sender: string, canDelete: boolean, onDelete: () => void, onPreview: () => void, onDownload: () => void }> = ({ file, sender, canDelete, onDelete, onPreview, onDownload }) => {
+  const [imgUrl, setImgUrl] = useState<string | null>(null);
   const isImg = file.type.startsWith('image/');
+
+  useEffect(() => {
+     if (isImg) {
+        getBlob(file.url).then(blob => {
+           if (blob) setImgUrl(URL.createObjectURL(blob));
+        });
+     }
+     return () => { if (imgUrl) URL.revokeObjectURL(imgUrl); };
+  }, [file.url]);
+
   return (
     <div className="bg-[#121216] border border-white/5 rounded-2xl overflow-hidden shadow-xl group animate-in zoom-in-95 border-l-2 border-indigo-600 relative">
       <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
@@ -946,9 +996,15 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, canDelete: boolean,
         )}
       </div>
       <div className="cursor-pointer aspect-video bg-black flex items-center justify-center relative overflow-hidden" onClick={onPreview}>
-         {isImg ? <div className="text-slate-800 scale-150"><Icons.Sparkles /></div> : <div className="text-slate-800"><Icons.File /></div>}
+         {isImg && imgUrl ? (
+            <img src={imgUrl} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
+         ) : isImg ? (
+            <div className="text-slate-800 scale-150"><Icons.Sparkles /></div>
+         ) : (
+            <div className="text-slate-800"><Icons.File /></div>
+         )}
          <div className="absolute inset-0 flex items-center justify-center bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity">
-            <span className="text-[9px] font-black text-white uppercase tracking-widest bg-black/50 px-3 py-1.5 rounded-full">Preview</span>
+            <span className="text-[9px] font-black text-white uppercase tracking-widest bg-black/50 px-3 py-1.5 rounded-full">Open</span>
          </div>
       </div>
       <div className="p-3">
