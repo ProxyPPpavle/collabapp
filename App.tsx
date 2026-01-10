@@ -39,7 +39,6 @@ const getBlob = async (key: string): Promise<Blob | null> => {
 // --- Storage Utils ---
 const saveToStorage = (key: string, data: any) => {
   localStorage.setItem(key, JSON.stringify(data));
-  // Manually trigger storage event for the same tab sync if needed (usually for other tabs)
   window.dispatchEvent(new StorageEvent('storage', { key }));
 };
 
@@ -169,7 +168,6 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [toast, setToast] = useState<{ m: string; t: 'ok' | 'err' } | null>(null);
-  const [showProfile, setShowProfile] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
@@ -190,19 +188,17 @@ export default function App() {
     return target?.lastSeen && (Date.now() - target.lastSeen < 12000);
   };
 
-  // Immediate update on group switch
-  useEffect(() => {
-    setMessages([]);
-    setOptimisticMessages([]);
-    setReplyingTo(null);
-    if (activeGroupId) fetchData();
-  }, [activeGroupId]);
-
   const fetchData = () => {
     if (!user) return;
     const users: User[] = getFromStorage('cl_users') || [];
     const allGroups: Group[] = getFromStorage('cl_groups') || [];
     
+    // Ensure "Live Hub" exists
+    if (!allGroups.some(g => g.id === 'live-space')) {
+       allGroups.push({ id: 'live-space', name: 'Live Hub', ownerId: 'system', members: [], createdAt: Date.now() });
+       saveToStorage('cl_groups', allGroups);
+    }
+
     setAllUsers(users);
     setGroups(allGroups.filter(g => g.members.includes(user.id) || g.id === 'live-space'));
 
@@ -216,7 +212,19 @@ export default function App() {
     }
   };
 
-  // Real-time sync across tabs
+  // Immediate clear and fetch on group switch
+  const handleSwitchGroup = (id: string) => {
+    if (activeGroupId === id) return;
+    setMessages([]);
+    setOptimisticMessages([]);
+    setReplyingTo(null);
+    setActiveGroupId(id);
+  };
+
+  useEffect(() => {
+    if (user) fetchData();
+  }, [activeGroupId, user]);
+
   useEffect(() => {
     const sync = (e: StorageEvent) => fetchData();
     window.addEventListener('storage', sync);
@@ -225,9 +233,8 @@ export default function App() {
       window.removeEventListener('storage', sync);
       clearInterval(interval);
     };
-  }, [user, activeGroupId, allUsers]);
+  }, [user, activeGroupId]);
 
-  // Heartbeat
   useEffect(() => {
     if (!user) return;
     const beat = setInterval(() => {
@@ -250,20 +257,28 @@ export default function App() {
 
   const handleAuthSuccess = (u: User, autoGroupId?: string) => {
     setUser(u);
+    // Refresh user list with the new/logged-in user
+    const users: User[] = getFromStorage('cl_users') || [];
+    if (!users.some(existing => existing.id === u.id)) {
+      users.push(u);
+      saveToStorage('cl_users', users);
+    }
+
     if (autoGroupId) {
       const all: Group[] = getFromStorage('cl_groups') || [];
       const gIdx = all.findIndex((g:any) => g.id === autoGroupId);
       if (gIdx > -1) {
         if (!all[gIdx].members.includes(u.id)) {
-          all[gIdx].members = [...all[gIdx].members, u.id];
+          all[gIdx].members.push(u.id);
           saveToStorage('cl_groups', all);
           sendSystemMessage(autoGroupId, `${u.username} has entered the lab.`);
         }
-        setGroups(all.filter((g:any) => g.members.includes(u.id) || g.id === 'live-space'));
         setActiveGroupId(autoGroupId);
+        setGroups(all.filter((g:any) => g.members.includes(u.id) || g.id === 'live-space'));
         safeClearUrl();
       } else { 
         showToast("Lab not found!", 'err'); 
+        setActiveGroupId('live-space');
       }
     } else {
       setActiveGroupId('live-space');
@@ -305,14 +320,10 @@ export default function App() {
       reactions: []
     };
 
-    // Optimistic Update
     setOptimisticMessages(prev => [...prev, newMessage]);
-
-    // Instant Save
     const msgKey = `cl_msgs_${activeGroupId}`;
     const all = getFromStorage(msgKey) || [];
     saveToStorage(msgKey, [...all, newMessage]);
-
     setReplyingTo(null);
     setLastSentTime(Date.now());
   };
@@ -347,6 +358,7 @@ export default function App() {
   };
 
   const combinedMessages = useMemo(() => [...messages, ...optimisticMessages], [messages, optimisticMessages]);
+  const onlineCount = useMemo(() => allUsers.filter(u => isOnline(u)).length, [allUsers]);
 
   useEffect(() => {
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
@@ -363,13 +375,13 @@ export default function App() {
           {!user.isGuest && <button onClick={() => setShowCreateGroup(true)} className="p-2 bg-indigo-500/10 text-indigo-500 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"><Icons.Plus /></button>}
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
-          <button onClick={() => setActiveGroupId('live-space')} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
+          <button onClick={() => handleSwitchGroup('live-space')} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
             <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
             <span className="text-[10px] font-black uppercase tracking-widest italic">Live Hub</span>
           </button>
           <div className="h-px bg-white/5 my-4 mx-2"></div>
           {groups.filter(g => g.id !== 'live-space').map(g => (
-            <button key={g.id} onClick={() => setActiveGroupId(g.id)} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
+            <button key={g.id} onClick={() => handleSwitchGroup(g.id)} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
               <div className="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
               <span className="text-[10px] font-black truncate uppercase tracking-tighter">{g.name}</span>
             </button>
@@ -377,7 +389,7 @@ export default function App() {
         </div>
         <div className="p-4 bg-black/40 border-t border-white/5">
            <div className="flex items-center gap-3">
-             <img src={user.avatar} onClick={() => setShowProfile(true)} className="w-9 h-9 rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-all" />
+             <img src={user.avatar} className="w-9 h-9 rounded-xl border border-white/10" />
              <div className="flex-1 min-w-0">
                 <p className="text-[10px] font-black text-white truncate uppercase italic">{user.username}</p>
                 <p className="text-[7px] font-black text-indigo-500 uppercase tracking-widest">{user.plan}</p>
@@ -399,23 +411,40 @@ export default function App() {
             <div className="h-16 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20">
                <div className="flex items-center gap-4">
                   <h2 className="font-black text-sm text-white italic uppercase tracking-tighter">{activeGroup.name}</h2>
-                  {activeGroup.id !== 'live-space' && (
-                    <button onClick={() => {
-                      const link = `${window.location.origin}${window.location.pathname}?room=${activeGroup.id}`;
-                      navigator.clipboard.writeText(link);
-                      showToast("Direct Link Copied!");
-                    }} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[8px] font-black uppercase tracking-widest border border-white/5">
-                      <Icons.Copy /> Copy Link
-                    </button>
+                  {activeGroupId !== 'live-space' && (
+                    <div className="flex gap-2">
+                       <button onClick={() => {
+                        const link = `${window.location.origin}${window.location.pathname}?room=${activeGroup.id}`;
+                        navigator.clipboard.writeText(link);
+                        showToast("Link Copied!");
+                      }} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[8px] font-black uppercase tracking-widest border border-white/5">
+                        <Icons.Copy /> Link
+                      </button>
+                      <button onClick={() => {
+                        navigator.clipboard.writeText(activeGroup.id);
+                        showToast("Code Copied: " + activeGroup.id);
+                      }} className="px-3 py-1.5 bg-white/5 text-indigo-500 hover:text-white rounded-lg transition-all text-[8px] font-black uppercase tracking-widest border border-indigo-500/20">
+                        Code: {activeGroup.id}
+                      </button>
+                    </div>
                   )}
                </div>
                <div className="flex items-center gap-4">
-                  <div className="flex -space-x-1.5">
-                    {allUsers.filter(u => activeGroup.members.includes(u.id) || activeGroup.id === 'live-space').slice(0, 5).map(m => (
-                      <img key={m.id} src={m.avatar} className={`w-7 h-7 rounded-lg border-2 border-[#050505]`} />
-                    ))}
-                  </div>
-                  <button onClick={() => setShowAbout(true)} className="text-[8px] bg-white/5 px-3 py-1.5 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">About</button>
+                  {activeGroupId === 'live-space' ? (
+                     <div className="flex items-center gap-2">
+                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                        <span className="text-[10px] font-black uppercase text-emerald-500 italic tracking-widest">Online: {onlineCount}</span>
+                     </div>
+                  ) : (
+                    <>
+                      <div className="flex -space-x-1.5">
+                        {allUsers.filter(u => activeGroup.members.includes(u.id)).slice(0, 5).map(m => (
+                          <img key={m.id} src={m.avatar} className={`w-7 h-7 rounded-lg border-2 border-[#050505]`} title={m.username} />
+                        ))}
+                      </div>
+                      <button onClick={() => setShowAbout(true)} className="text-[8px] bg-white/5 px-3 py-1.5 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">Members</button>
+                    </>
+                  )}
                </div>
             </div>
 
@@ -524,7 +553,7 @@ export default function App() {
         </div>
       )}
 
-      {showAbout && activeGroupId && (
+      {showAbout && activeGroupId && activeGroupId !== 'live-space' && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[500] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-3xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
               <div className="flex justify-between items-center mb-6">
@@ -532,7 +561,7 @@ export default function App() {
                  <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
               </div>
               <div className="space-y-2.5">
-                {allUsers.filter(u => activeGroupId === 'live-space' ? true : activeGroup?.members?.includes(u.id)).map(m => (
+                {allUsers.filter(u => activeGroup?.members?.includes(u.id)).map(m => (
                   <div key={m.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
                     <div className="flex items-center gap-3">
                       <img src={m.avatar} className="w-8 h-8 rounded-lg" />
