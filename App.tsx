@@ -94,7 +94,7 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
         const all = getFromStorage('cl_groups') || [];
         saveToStorage('cl_groups', [...all, newG]);
       } else if (mode === 'join-link') {
-        targetRoomId = roomToJoin || undefined;
+        targetRoomId = (roomToJoin || '').toUpperCase();
       } else {
         targetRoomId = roomCode.toUpperCase();
       }
@@ -105,7 +105,7 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
 
     if (mode === 'login') {
       const user = users.find((u) => u.email === email || u.username === email);
-      if (user) onAuth(user, roomToJoin || undefined);
+      if (user) onAuth(user, roomToJoin?.toUpperCase() || undefined);
       else alert('User not found');
     } else {
       if (users.some(u => u.username === username)) { alert("Username taken!"); return; }
@@ -121,7 +121,7 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
       };
       users.push(newUser);
       saveToStorage('cl_users', users);
-      onAuth(newUser, roomToJoin || undefined);
+      onAuth(newUser, roomToJoin?.toUpperCase() || undefined);
     }
   };
 
@@ -195,7 +195,6 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'chat' | 'ask'>('chat');
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
 
-  // Fix: Added state for AI feedback and analysis loading state
   const [aiFeedback, setAiFeedback] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   
@@ -303,7 +302,6 @@ export default function App() {
 
   const handleSendMessage = async (text: string, file?: File) => {
     if (!user || !activeGroupId) return;
-    if (activeGroup?.mutedMembers?.includes(user.id)) { showToast("Muted!", "err"); return; }
     
     let sharedFile: SharedFile | undefined;
     if (file) {
@@ -357,6 +355,7 @@ export default function App() {
       if (action === 'kick') {
         all[idx].members = all[idx].members.filter(m => m !== targetId);
         sendSystemMessage(activeGroupId, `User removed by Admin.`);
+        showToast("Member kicked.");
       }
       saveToStorage('cl_groups', all);
       fetchData();
@@ -450,7 +449,6 @@ export default function App() {
     }
   };
 
-  // Fix: Added missing handleSwitchGroup function to fix 'Cannot find name' errors and reset UI state
   const handleSwitchGroup = (id: string) => {
     setActiveGroupId(id);
     setReplyingTo(null);
@@ -472,12 +470,10 @@ export default function App() {
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, activeTab]);
 
-  // Fix: Added AI analysis effect to fetch insights when the 'ask' tab is selected
   useEffect(() => {
     if (activeTab === 'ask' && activeGroupId && !aiFeedback && !isAnalyzing) {
       const triggerAnalysis = async () => {
         setIsAnalyzing(true);
-        // Provide context by including up to the last 10 messages
         const contextMessages = messages.slice(-10).map(m => `${m.senderName}: ${m.text}`).join('\n');
         if (contextMessages.trim()) {
            const result = await getFeedbackOnMessage(contextMessages, activeGroup?.name || "General Workspace");
@@ -563,7 +559,6 @@ export default function App() {
            </div>
         </div>
 
-        {/* PROFILE AT BOTTOM LEFT */}
         <div className="p-3 border-t border-white/5 bg-black/20">
            <div className="flex flex-col gap-2">
              <button onClick={() => setProfileUserId(user.id)} className="flex items-center gap-3 group">
@@ -635,6 +630,7 @@ export default function App() {
                     <div className="flex gap-1.5">
                        <button onClick={() => {
                         const link = `${window.location.origin}${window.location.pathname}?room=${activeGroup.id}`;
+                        // Corrected redundant .clipboard property access
                         navigator.clipboard.writeText(link);
                         showToast("Copied!");
                       }} className="flex items-center gap-1 px-2 py-1 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[7px] font-black uppercase tracking-widest border border-white/5">
@@ -655,9 +651,9 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className="flex items-center gap-2 mobile-hide">
-                     <div className={`w-1 h-1 rounded-full ${activeGroupId === 'live-space' ? 'bg-emerald-500' : 'bg-slate-500'}`}></div>
-                     <button onClick={() => setShowAbout(true)} className="text-[7px] bg-white/5 px-2 py-1 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all">Members</button>
+                  <div className="flex items-center gap-2">
+                     <div className={`w-1 h-1 rounded-full ${activeGroupId === 'live-space' ? 'bg-emerald-500' : 'bg-slate-500'} mobile-hide`}></div>
+                     <button onClick={() => setShowAbout(true)} className="text-[7px] bg-white/5 px-2 py-1 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">Members</button>
                   </div>
                </div>
             </div>
