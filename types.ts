@@ -13,10 +13,11 @@ export interface User {
   avatar: string;
   plan: Plan;
   friends: string[];
+  friendRequests?: string[]; // IDs of users who sent a request
   lastSeen?: number;
   chatColor?: string;
   isGuest?: boolean;
-  isSpeaking?: boolean; // Visual simulation for UI
+  isSpeaking?: boolean;
 }
 
 export interface Group {
@@ -25,7 +26,7 @@ export interface Group {
   ownerId: string;
   members: string[];
   mutedMembers?: string[];
-  inCall?: string[]; // User IDs currently in voice call
+  inCall?: string[];
   createdAt: number;
 }
 

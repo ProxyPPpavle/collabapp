@@ -107,7 +107,16 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
       else alert('User not found');
     } else {
       if (users.some(u => u.username === username)) { alert("Username taken!"); return; }
-      const newUser: User = { id: Math.random().toString(36).substring(2, 9), email, username, avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`, plan: 'free', friends: [], chatColor: CHAT_COLORS[0] };
+      const newUser: User = { 
+        id: Math.random().toString(36).substring(2, 9), 
+        email, 
+        username, 
+        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`, 
+        plan: 'free', 
+        friends: [], 
+        friendRequests: [],
+        chatColor: CHAT_COLORS[0] 
+      };
       users.push(newUser);
       saveToStorage('cl_users', users);
       onAuth(newUser, roomToJoin || undefined);
@@ -128,13 +137,16 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
             <div className="space-y-3">
               <button onClick={() => setMode('guest')} className="w-full bg-indigo-600 text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-500 transition-all">Create Fast Group</button>
               <button onClick={() => setMode('join-code')} className="w-full bg-white/5 border border-white/10 text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-white/10 transition-all">Join with Code</button>
-              <button onClick={() => setMode('login')} className="w-full text-indigo-400 py-3 font-black uppercase text-[10px] tracking-widest hover:text-white underline">Sign In</button>
+              <div className="flex gap-2">
+                <button onClick={() => setMode('login')} className="flex-1 bg-white/5 border border-white/10 text-indigo-400 py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-600 hover:text-white transition-all">Login</button>
+                <button onClick={() => setMode('signup')} className="flex-1 bg-white/5 border border-white/10 text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-white/10 transition-all">Signup</button>
+              </div>
             </div>
           </div>
         ) : (
           <div>
             <h2 className="text-lg font-black text-white italic uppercase mb-6 text-center">
-              {mode === 'join-link' || mode === 'join-code' ? 'Join Lab' : mode === 'guest' ? 'Guest Access' : mode === 'login' ? 'Login' : 'Signup'}
+              {mode === 'join-link' || mode === 'join-code' ? 'Join Lab' : mode === 'guest' ? 'Guest Access' : mode === 'login' ? 'Welcome Back' : 'Create Account'}
             </h2>
             <form onSubmit={handleSubmit} className="space-y-4">
               {mode === 'join-code' && <input type="text" placeholder="LAB CODE" required className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white font-bold uppercase text-center tracking-widest" value={roomCode} onChange={(e) => setRoomCode(e.target.value)} />}
@@ -171,12 +183,13 @@ export default function App() {
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [toast, setToast] = useState<{ m: string; t: 'ok' | 'err' } | null>(null);
   const [showAbout, setShowAbout] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [selectedFile, setSelectedFile] = useState<SharedFile | null>(null);
   const [lastSentTime, setLastSentTime] = useState(0);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
-  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [activeTab, setActiveTab] = useState<'chat' | 'ask'>('chat');
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -196,7 +209,12 @@ export default function App() {
     const users: User[] = getFromStorage('cl_users') || [];
     const allGroups: Group[] = getFromStorage('cl_groups') || [];
     
-    // Auto-create Live Hub
+    // Update local user state if changed in storage (like new friends)
+    const freshMe = users.find(u => u.id === user.id);
+    if (freshMe && JSON.stringify(freshMe) !== JSON.stringify(user)) {
+      setUser(freshMe);
+    }
+
     if (!allGroups.some(g => g.id === 'live-space')) {
        allGroups.push({ id: 'live-space', name: 'Live Hub', ownerId: 'system', members: [], createdAt: Date.now() });
        saveToStorage('cl_groups', allGroups);
@@ -208,20 +226,33 @@ export default function App() {
     if (activeGroupId) {
       const msgKey = `cl_msgs_${activeGroupId}`;
       const groupMsgs: Message[] = getFromStorage(msgKey) || [];
-      // SYNC FIX: We do NOT filter by online status for displaying history.
-      // Everyone who is a member sees the history.
       setMessages(groupMsgs);
       setOptimisticMessages(prev => prev.filter(om => !groupMsgs.some(fm => fm.id === om.id)));
     }
   };
+
+  useEffect(() => {
+    const handleUnload = () => {
+      if (user && activeGroupId) {
+        const all: Group[] = getFromStorage('cl_groups') || [];
+        const idx = all.findIndex(g => g.id === activeGroupId);
+        if (idx > -1) {
+          all[idx].inCall = (all[idx].inCall || []).filter(uid => uid !== user.id);
+          saveToStorage('cl_groups', all);
+        }
+      }
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    return () => window.removeEventListener('beforeunload', handleUnload);
+  }, [user, activeGroupId]);
 
   const handleSwitchGroup = (id: string) => {
     if (activeGroupId === id) return;
     setMessages([]);
     setOptimisticMessages([]);
     setReplyingTo(null);
-    setEditingMessage(null);
     setActiveGroupId(id);
+    setActiveTab('chat');
   };
 
   useEffect(() => {
@@ -231,7 +262,7 @@ export default function App() {
   useEffect(() => {
     const sync = (e: StorageEvent) => fetchData();
     window.addEventListener('storage', sync);
-    const interval = setInterval(fetchData, 1000); // 1s polling for better feel
+    const interval = setInterval(fetchData, 1000);
     return () => {
       window.removeEventListener('storage', sync);
       clearInterval(interval);
@@ -272,7 +303,7 @@ export default function App() {
         if (!all[gIdx].members.includes(u.id)) {
           all[gIdx].members.push(u.id);
           saveToStorage('cl_groups', all);
-          sendSystemMessage(autoGroupId, `${u.username} joined the lab.`);
+          sendSystemMessage(autoGroupId, `${u.username} joined.`);
         }
         setActiveGroupId(autoGroupId);
         safeClearUrl();
@@ -294,17 +325,8 @@ export default function App() {
 
   const handleSendMessage = async (text: string, file?: File) => {
     if (!user || !activeGroupId) return;
-    
-    // Mute check
-    if (activeGroup?.mutedMembers?.includes(user.id)) {
-      showToast("You are muted!", "err");
-      return;
-    }
-
-    if (activeGroupId === 'live-space' && Date.now() - lastSentTime < 1000) { 
-      showToast("Slow down!", 'err'); 
-      return; 
-    }
+    if (activeGroup?.mutedMembers?.includes(user.id)) { showToast("Muted!", "err"); return; }
+    if (activeGroupId === 'live-space' && Date.now() - lastSentTime < 1000) { showToast("Wait...", 'err'); return; }
     
     let sharedFile: SharedFile | undefined;
     if (file) {
@@ -385,6 +407,28 @@ export default function App() {
     }
   };
 
+  const handleSocialAction = (targetId: string, action: 'request' | 'accept' | 'deny') => {
+    if (!user) return;
+    const users: User[] = getFromStorage('cl_users') || [];
+    const meIdx = users.findIndex(u => u.id === user.id);
+    const targetIdx = users.findIndex(u => u.id === targetId);
+    
+    if (meIdx > -1 && targetIdx > -1) {
+      if (action === 'request') {
+        const requests = users[targetIdx].friendRequests || [];
+        if (!requests.includes(user.id)) users[targetIdx].friendRequests = [...requests, user.id];
+      } else if (action === 'accept') {
+        users[meIdx].friendRequests = (users[meIdx].friendRequests || []).filter(id => id !== targetId);
+        users[meIdx].friends = [...(users[meIdx].friends || []), targetId];
+        users[targetIdx].friends = [...(users[targetIdx].friends || []), user.id];
+      } else if (action === 'deny') {
+        users[meIdx].friendRequests = (users[meIdx].friendRequests || []).filter(id => id !== targetId);
+      }
+      saveToStorage('cl_users', users);
+      fetchData();
+    }
+  };
+
   const handleCreateGroup = () => {
     if (!newGroupName.trim() || !user) return;
     const gId = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -397,12 +441,10 @@ export default function App() {
     showToast("Lab Created!");
   };
 
-  // UI SEPARATION: Chat messages only (exclude files)
   const chatMessages = useMemo(() => {
     return [...messages, ...optimisticMessages].filter(m => m.type !== 'file');
   }, [messages, optimisticMessages]);
 
-  // UI SEPARATION: Files only
   const labAssets = useMemo(() => {
     return messages.filter(m => m.type === 'file');
   }, [messages]);
@@ -411,24 +453,73 @@ export default function App() {
 
   useEffect(() => {
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+  }, [chatMessages, activeTab]);
+
+  const triggerDownload = async (file: SharedFile) => {
+    const blob = await getBlob(file.url);
+    if (blob) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } else {
+      showToast("File missing", "err");
+    }
+  };
 
   if (!user) return <AuthPage onAuth={handleAuthSuccess} />;
 
   return (
-    <div className="flex h-screen bg-[#050505] text-slate-300 overflow-hidden font-sans">
+    <div className="flex h-screen bg-[#050505] text-slate-300 overflow-hidden font-sans select-none">
       {/* SIDEBAR */}
       <div className="w-[280px] bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0 z-30 shadow-2xl">
         <div className="p-6 border-b border-white/5 flex items-center justify-between">
           <span className="font-black text-[10px] uppercase tracking-[0.2em] text-indigo-400 italic">WORKSPACE</span>
-          {!user.isGuest && <button onClick={() => setShowCreateGroup(true)} className="p-2 bg-indigo-500/10 text-indigo-500 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"><Icons.Plus /></button>}
+          {!user.isGuest && (
+            <div className="flex gap-2">
+              <button onClick={() => showToast("Inbox Coming Soon")} className="p-2 bg-white/5 text-slate-500 rounded-lg hover:text-white transition-all"><Icons.Reply /></button>
+              <button onClick={() => setShowCreateGroup(true)} className="p-2 bg-indigo-500/10 text-indigo-500 rounded-lg hover:bg-indigo-600 hover:text-white transition-all"><Icons.Plus /></button>
+            </div>
+          )}
         </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+        
+        <div className="flex-1 overflow-y-auto p-3 space-y-1.5 custom-scroll">
+          {/* LOGGED IN SOCIAL SECTION */}
+          {!user.isGuest && (
+            <div className="mb-6 px-1">
+              <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest block mb-4">Connections</span>
+              <div className="space-y-1">
+                 {user.friends?.length === 0 ? (
+                    <p className="text-[8px] text-slate-700 italic px-2">No friends added yet.</p>
+                 ) : (
+                    user.friends.map(fId => {
+                      const friend = allUsers.find(u => u.id === fId);
+                      if (!friend) return null;
+                      return (
+                        <div key={fId} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer group transition-all">
+                          <div className="relative">
+                            <img src={friend.avatar} className="w-8 h-8 rounded-lg" />
+                            {isOnline(friend) && <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border-2 border-[#0f0f12]"></div>}
+                          </div>
+                          <div className="flex-1 overflow-hidden">
+                             <p className="text-[10px] font-bold truncate uppercase">{friend.username}</p>
+                          </div>
+                        </div>
+                      );
+                    })
+                 )}
+              </div>
+            </div>
+          )}
+
+          <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest block mb-4 px-1">Research Labs</span>
           <button onClick={() => handleSwitchGroup('live-space')} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
             <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
             <span className="text-[10px] font-black uppercase tracking-widest italic">Live Hub</span>
           </button>
-          <div className="h-px bg-white/5 my-4 mx-2"></div>
+          
           {groups.filter(g => g.id !== 'live-space').map(g => (
             <button key={g.id} onClick={() => handleSwitchGroup(g.id)} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
               <div className="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
@@ -436,11 +527,12 @@ export default function App() {
             </button>
           ))}
         </div>
+
         <div className="p-4 bg-black/40 border-t border-white/5">
            <div className="flex items-center gap-3">
-             <img src={user.avatar} className="w-9 h-9 rounded-xl border border-white/10" />
-             <div className="flex-1 min-w-0">
-                <p className="text-[10px] font-black text-white truncate uppercase italic">{user.username}</p>
+             <img src={user.avatar} onClick={() => setShowProfile(true)} className="w-9 h-9 rounded-xl border border-white/10 cursor-pointer hover:scale-105 transition-all shadow-lg" />
+             <div className="flex-1 min-w-0" onClick={() => setShowProfile(true)}>
+                <p className="text-[10px] font-black text-white truncate uppercase italic cursor-pointer">{user.username}</p>
                 <p className="text-[7px] font-black text-indigo-500 uppercase tracking-widest">{user.plan}</p>
              </div>
              <button onClick={() => window.location.reload()} className="text-slate-600 hover:text-rose-500 p-2"><Icons.LogOut /></button>
@@ -475,7 +567,14 @@ export default function App() {
                     </div>
                   )}
                </div>
-               <div className="flex items-center gap-4">
+               
+               <div className="flex items-center gap-6">
+                  {/* TABS */}
+                  <div className="flex bg-white/5 rounded-xl p-1 border border-white/5">
+                    <button onClick={() => setActiveTab('chat')} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Chat</button>
+                    <button onClick={() => setActiveTab('ask')} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${activeTab === 'ask' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Ask Feedback</button>
+                  </div>
+
                   {activeGroupId === 'live-space' ? (
                      <div className="flex items-center gap-2">
                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
@@ -496,67 +595,82 @@ export default function App() {
 
             <div className="flex-1 flex overflow-hidden">
               <div className="flex-1 flex flex-col relative">
-                <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                  {chatMessages.length === 0 && (
-                    <div className="h-full flex flex-center items-center justify-center opacity-10 italic text-[10px] uppercase font-black tracking-widest">No messages yet</div>
-                  )}
-                  {chatMessages.map(msg => (
-                    msg.type === 'system' ? (
-                      <div key={msg.id} className="text-center py-4"><span className="px-4 py-1.5 rounded-full bg-emerald-500/10 text-[9px] font-black text-emerald-400 uppercase tracking-widest italic border border-emerald-500/20">{msg.text}</span></div>
-                    ) : (
-                      <MessageComponent 
-                        key={msg.id} 
-                        msg={msg} 
-                        me={user!} 
-                        onReply={() => setReplyingTo(msg)} 
-                        onEdit={(txt:string) => handleEditMessage(msg.id, txt)}
-                        onReact={(id:string,e:string) => {
-                          const msgKey = `cl_msgs_${activeGroupId}`;
-                          const all = getFromStorage(msgKey) || [];
-                          const idx = all.findIndex((m:any) => m.id === id);
-                          if(idx > -1) {
-                            const reactions = all[idx].reactions || [];
-                            const rIdx = reactions.findIndex((r:Reaction) => r.emoji === e);
-                            if(rIdx > -1) {
-                              if(reactions[rIdx].userIds.includes(user.id)) reactions[rIdx].userIds = reactions[rIdx].userIds.filter((uid:string)=>uid!==user.id);
-                              else reactions[rIdx].userIds.push(user.id);
-                            } else { reactions.push({emoji: e, userIds: [user.id]}); }
-                            all[idx].reactions = reactions.filter((r:Reaction)=>r.userIds.length > 0);
-                            saveToStorage(msgKey, all);
-                            fetchData();
-                          }
-                        }} 
-                        onDelete={() => {
-                          const msgKey = `cl_msgs_${activeGroupId}`;
-                          const all = getFromStorage(msgKey) || [];
-                          saveToStorage(msgKey, all.filter((m:any)=>m.id!==msg.id));
-                          showToast("Message Deleted");
-                          fetchData();
-                        }} 
-                      />
-                    )
-                  ))}
-                  <div ref={chatEndRef} />
-                </div>
-                
-                <div className="p-4 border-t border-white/5 bg-[#08080a]/50">
-                  <div className="max-w-4xl mx-auto flex flex-col gap-2">
-                    {replyingTo && (
-                      <div className="bg-indigo-600/10 p-2 rounded-xl flex items-center justify-between border-l-4 border-indigo-600 text-[10px]">
-                         <span className="font-black uppercase text-indigo-400 pl-2">Replying to {replyingTo.senderName}</span>
-                         <button onClick={() => setReplyingTo(null)} className="p-1"><Icons.X /></button>
-                      </div>
-                    )}
-                    <div className="flex gap-3 items-center">
-                      {activeGroupId !== 'live-space' && (
-                        <button onClick={() => handleCallAction(activeGroup?.inCall?.includes(user.id) ? 'leave' : 'join')} className={`p-3.5 rounded-2xl transition-all ${activeGroup?.inCall?.includes(user.id) ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/20' : 'bg-white/5 text-indigo-500 hover:bg-white/10 border border-white/5'}`}>
-                          <Icons.Phone />
-                        </button>
+                {activeTab === 'chat' ? (
+                  <>
+                    <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scroll">
+                      {chatMessages.length === 0 && (
+                        <div className="h-full flex flex-center items-center justify-center opacity-10 italic text-[10px] uppercase font-black tracking-widest">No messages yet</div>
                       )}
-                      <ChatInput onSend={handleSendMessage} disabled={activeGroup?.mutedMembers?.includes(user.id)} />
+                      {chatMessages.map(msg => (
+                        msg.type === 'system' ? (
+                          <div key={msg.id} className="text-center py-4"><span className="px-4 py-1.5 rounded-full bg-emerald-500/10 text-[9px] font-black text-emerald-400 uppercase tracking-widest italic border border-emerald-500/20">{msg.text}</span></div>
+                        ) : (
+                          <MessageComponent 
+                            key={msg.id} 
+                            msg={msg} 
+                            me={user!} 
+                            isAdmin={user.id === activeGroup?.ownerId}
+                            onReply={() => setReplyingTo(msg)} 
+                            onEdit={(txt:string) => handleEditMessage(msg.id, txt)}
+                            onReact={(id:string,e:string) => {
+                              const msgKey = `cl_msgs_${activeGroupId}`;
+                              const all = getFromStorage(msgKey) || [];
+                              const idx = all.findIndex((m:any) => m.id === id);
+                              if(idx > -1) {
+                                const reactions = all[idx].reactions || [];
+                                const rIdx = reactions.findIndex((r:Reaction) => r.emoji === e);
+                                if(rIdx > -1) {
+                                  if(reactions[rIdx].userIds.includes(user.id)) reactions[rIdx].userIds = reactions[rIdx].userIds.filter((uid:string)=>uid!==user.id);
+                                  else reactions[rIdx].userIds.push(user.id);
+                                } else { reactions.push({emoji: e, userIds: [user.id]}); }
+                                all[idx].reactions = reactions.filter((r:Reaction)=>r.userIds.length > 0);
+                                saveToStorage(msgKey, all);
+                                fetchData();
+                              }
+                            }} 
+                            onDelete={() => {
+                              const msgKey = `cl_msgs_${activeGroupId}`;
+                              const all = getFromStorage(msgKey) || [];
+                              saveToStorage(msgKey, all.filter((m:any)=>m.id!==msg.id));
+                              showToast("Deleted");
+                              fetchData();
+                            }} 
+                            onAddFriend={() => handleSocialAction(msg.senderId, 'request')}
+                          />
+                        )
+                      ))}
+                      <div ref={chatEndRef} />
                     </div>
+                    
+                    <div className="p-4 border-t border-white/5 bg-[#08080a]/50">
+                      <div className="max-w-4xl mx-auto flex flex-col gap-2">
+                        {replyingTo && (
+                          <div className="bg-indigo-600/10 p-2 rounded-xl flex items-center justify-between border-l-4 border-indigo-600 text-[10px]">
+                            <span className="font-black uppercase text-indigo-400 pl-2">Replying to {replyingTo.senderName}</span>
+                            <button onClick={() => setReplyingTo(null)} className="p-1"><Icons.X /></button>
+                          </div>
+                        )}
+                        <div className="flex gap-3 items-center">
+                          {activeGroupId !== 'live-space' && (
+                            <button onClick={() => handleCallAction(activeGroup?.inCall?.includes(user.id) ? 'leave' : 'join')} className={`p-3.5 rounded-2xl transition-all ${activeGroup?.inCall?.includes(user.id) ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/20' : 'bg-white/5 text-indigo-500 hover:bg-white/10 border border-white/5'}`}>
+                              <Icons.Phone />
+                            </button>
+                          )}
+                          <ChatInput onSend={handleSendMessage} disabled={activeGroup?.mutedMembers?.includes(user.id)} />
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center p-10 text-center animate-in fade-in slide-in-from-bottom-5">
+                    <div className="w-20 h-20 bg-indigo-600/10 text-indigo-500 rounded-3xl flex items-center justify-center mb-6">
+                      <Icons.Sparkles />
+                    </div>
+                    <h3 className="text-xl font-black uppercase italic tracking-widest text-white mb-2">Ask Everyone</h3>
+                    <p className="text-slate-500 text-[10px] uppercase font-bold tracking-widest mb-8">Coming Soon: Team Feedback & AI Analysis</p>
+                    <button onClick={() => setActiveTab('chat')} className="px-8 py-3 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all">Back to Chat</button>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* ASSET LAB */}
@@ -566,8 +680,8 @@ export default function App() {
                      <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest italic">CALL LAB</span>
                      <div className="mt-4 space-y-2">
                         {usersInCall.map(u => (
-                          <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${u.isSpeaking ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30' : 'bg-white/5'}`}>
-                            <img src={u.avatar} className={`w-7 h-7 rounded-lg ${u.isSpeaking ? 'ring-2 ring-emerald-500' : ''}`} />
+                          <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${Math.random() > 0.6 ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30' : 'bg-white/5'}`}>
+                            <img src={u.avatar} className={`w-7 h-7 rounded-lg ${Math.random() > 0.6 ? 'ring-2 ring-emerald-500 animate-pulse' : ''}`} />
                             <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{u.username}</span>
                           </div>
                         ))}
@@ -579,7 +693,7 @@ export default function App() {
                     <input type="file" id="lab-up" className="hidden" onChange={e => { if(e.target.files?.[0]) handleSendMessage('', e.target.files[0]); e.target.value=''; }} />
                     <label htmlFor="lab-up" className="p-2.5 bg-indigo-600 text-white rounded-xl cursor-pointer hover:bg-indigo-500 transition-all shadow-lg"><Icons.Plus /></label>
                   </div>
-                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scroll">
                      {labAssets.map(msg => (
                       <FileItem 
                         key={msg.id} 
@@ -592,10 +706,11 @@ export default function App() {
                           saveToStorage(msgKey, all.filter((m:any)=>m.id!==msg.id));
                           fetchData();
                         }}
+                        onDownload={() => triggerDownload(msg.file!)}
                         onPreview={async () => {
                           const blob = await getBlob(msg.file!.url);
                           if (blob) setSelectedFile({...msg.file!, url: URL.createObjectURL(blob)});
-                          else showToast("File missing", 'err');
+                          else showToast("Expired", 'err');
                         }} 
                       />
                     ))}
@@ -618,6 +733,55 @@ export default function App() {
         </div>
       )}
 
+      {showProfile && user && (
+        <div className="fixed inset-0 bg-black/95 z-[500] flex items-center justify-center p-6" onClick={() => setShowProfile(false)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-md p-10 shadow-2xl animate-in zoom-in-95 overflow-hidden relative" onClick={e => e.stopPropagation()}>
+              <div className="absolute top-0 left-0 w-full h-32 bg-indigo-600 opacity-10"></div>
+              <div className="relative flex flex-col items-center">
+                 <img src={user.avatar} className="w-32 h-32 rounded-3xl border-4 border-[#0f0f12] shadow-2xl mb-6 mt-10" />
+                 <h3 className="text-2xl font-black uppercase italic text-white tracking-tighter">{user.username}</h3>
+                 <p className="text-slate-500 text-[10px] uppercase font-bold tracking-[0.3em] mb-8">{user.email || 'GUEST ACCOUNT'}</p>
+                 
+                 <div className="w-full space-y-3">
+                   <div className="flex justify-between p-5 bg-white/5 rounded-2xl border border-white/5">
+                      <span className="text-[10px] font-black uppercase text-slate-500">Plan</span>
+                      <span className="text-[10px] font-black uppercase text-indigo-400">{user.plan}</span>
+                   </div>
+                   <div className="flex justify-between p-5 bg-white/5 rounded-2xl border border-white/5">
+                      <span className="text-[10px] font-black uppercase text-slate-500">Member Since</span>
+                      <span className="text-[10px] font-black uppercase text-white">FEB 2025</span>
+                   </div>
+                   
+                   {!user.isGuest && user.friendRequests && user.friendRequests.length > 0 && (
+                      <div className="pt-6">
+                        <span className="text-[9px] font-black uppercase text-indigo-500 tracking-widest block mb-4">Pending Requests</span>
+                        <div className="space-y-2">
+                           {user.friendRequests.map(id => {
+                              const requester = allUsers.find(au => au.id === id);
+                              return requester ? (
+                                <div key={id} className="flex items-center justify-between bg-white/5 p-3 rounded-2xl">
+                                   <div className="flex items-center gap-3">
+                                      <img src={requester.avatar} className="w-8 h-8 rounded-lg" />
+                                      <span className="text-[10px] font-black uppercase">{requester.username}</span>
+                                   </div>
+                                   <div className="flex gap-2">
+                                      <button onClick={() => handleSocialAction(id, 'accept')} className="p-2 bg-indigo-600 rounded-lg text-white"><Icons.Plus /></button>
+                                      <button onClick={() => handleSocialAction(id, 'deny')} className="p-2 bg-white/5 rounded-lg text-rose-500"><Icons.X /></button>
+                                   </div>
+                                </div>
+                              ) : null;
+                           })}
+                        </div>
+                      </div>
+                   )}
+                 </div>
+                 
+                 <button onClick={() => setShowProfile(false)} className="w-full py-4 mt-8 bg-white text-black rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all">Close Profile</button>
+              </div>
+           </div>
+        </div>
+      )}
+
       {showAbout && activeGroupId && activeGroupId !== 'live-space' && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[500] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-3xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
@@ -625,7 +789,7 @@ export default function App() {
                  <h3 className="font-black italic text-sm uppercase tracking-widest text-white">Lab Members</h3>
                  <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
               </div>
-              <div className="space-y-2.5">
+              <div className="space-y-2.5 mb-6 max-h-[400px] overflow-y-auto custom-scroll pr-2">
                 {allUsers.filter(u => activeGroup?.members?.includes(u.id)).map(m => (
                   <div key={m.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
                     <div className="flex items-center gap-3">
@@ -647,6 +811,10 @@ export default function App() {
                     )}
                   </div>
                 ))}
+              </div>
+              <div className="p-4 bg-indigo-600/5 rounded-2xl border border-indigo-500/10">
+                 <p className="text-[9px] font-black uppercase text-indigo-400 italic tracking-[0.2em]">Lab Status</p>
+                 <p className="text-[9px] font-bold text-slate-500 mt-1">This space is ephemeral. Messages and files self-destruct after 60 minutes.</p>
               </div>
            </div>
         </div>
@@ -680,7 +848,7 @@ export default function App() {
   );
 }
 
-const MessageComponent = ({ msg, me, onReply, onReact, onDelete, onEdit }: any) => {
+const MessageComponent = ({ msg, me, isAdmin, onReply, onReact, onDelete, onEdit, onAddFriend }: any) => {
   const [showMenu, setShowMenu] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(msg.text);
@@ -692,15 +860,22 @@ const MessageComponent = ({ msg, me, onReply, onReact, onDelete, onEdit }: any) 
     setShowMenu(false);
   };
 
+  const isFriend = me.friends?.includes(msg.senderId);
+
   return (
     <div className={`flex gap-3 group/msg ${msg.senderId === me.id ? 'flex-row-reverse' : ''}`} onClick={() => setShowMenu(!showMenu)}>
-      <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-lg bg-black shrink-0 border border-white/5" />
-      <div className={`flex flex-col max-w-[80%] relative ${msg.senderId === me.id ? 'items-end' : ''}`}>
+      <div className="relative">
+        <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-lg bg-black shrink-0 border border-white/5" />
+        {msg.senderId !== me.id && !me.isGuest && !isFriend && msg.senderId !== 'system' && (
+          <button onClick={(e) => { e.stopPropagation(); onAddFriend(); }} className="absolute -top-1 -right-1 p-0.5 bg-indigo-600 rounded-full scale-0 group-hover/msg:scale-100 transition-all text-white"><Icons.Plus /></button>
+        )}
+      </div>
+      <div className={`flex flex-col max-w-[75%] relative ${msg.senderId === me.id ? 'items-end' : 'items-start ml-1'}`}>
         <span className="text-[8px] font-black uppercase tracking-[0.2em] mb-1 px-1 opacity-40 italic">
           {msg.senderName} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} {msg.isEdited && "(edited)"}
         </span>
         
-        <div className={`p-2.5 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
+        <div className={`p-2.5 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none mr-1' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
           {isEditing ? (
             <div className="flex flex-col gap-2 min-w-[200px]">
               <textarea 
@@ -731,7 +906,7 @@ const MessageComponent = ({ msg, me, onReply, onReact, onDelete, onEdit }: any) 
 
         {showMenu && !isEditing && (
           <div className={`absolute -top-12 flex flex-col bg-[#1a1a20] border border-white/10 rounded-2xl p-1 shadow-2xl z-50 animate-in zoom-in-95 ${msg.senderId === me.id ? 'right-0' : 'left-0'}`}>
-            <div className="flex items-center gap-0.5 max-w-[200px] overflow-x-auto p-1 scrollbar-hide">
+            <div className="flex items-center gap-0.5 p-1 scrollbar-hide">
               {EMOJIS.map(e => (
                 <button key={e} onClick={(e_sub) => { e_sub.stopPropagation(); onReact(msg.id, e); setShowMenu(false); }} className="p-1.5 hover:bg-white/10 rounded-lg text-sm transition-transform active:scale-150">{e}</button>
               ))}
@@ -740,7 +915,7 @@ const MessageComponent = ({ msg, me, onReply, onReact, onDelete, onEdit }: any) 
             <div className="flex justify-between px-2 py-1 gap-2">
               <button onClick={(e) => { e.stopPropagation(); onReply(); setShowMenu(false); }} className="text-indigo-400 p-1.5 hover:bg-indigo-500/10 rounded-lg" title="Reply"><Icons.Reply /></button>
               {msg.senderId === me.id && <button onClick={(e) => { e.stopPropagation(); setIsEditing(true); }} className="text-indigo-400 p-1.5 hover:bg-indigo-500/10 rounded-lg" title="Edit"><Icons.Edit /></button>}
-              {msg.senderId === me.id && <button onClick={(e) => { e.stopPropagation(); onDelete(); setShowMenu(false); }} className="text-rose-500 p-1.5 hover:bg-rose-500/10 rounded-lg" title="Delete"><Icons.Trash /></button>}
+              {(msg.senderId === me.id || isAdmin) && <button onClick={(e) => { e.stopPropagation(); onDelete(); setShowMenu(false); }} className="text-rose-500 p-1.5 hover:bg-rose-500/10 rounded-lg" title="Delete"><Icons.Trash /></button>}
             </div>
           </div>
         )}
@@ -754,19 +929,22 @@ const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean }> =
   const handleSend = () => { if(text.trim() && !disabled) { onSend(text); setText(''); } };
   return (
     <div className={`flex-1 flex items-end gap-2 bg-[#0f0f12] border border-white/5 rounded-2xl p-2 focus-within:border-indigo-500/40 transition-all ${disabled ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}>
-      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "Access Denied" : "Type something..."} className="flex-1 bg-transparent py-2.5 px-4 text-[13px] outline-none resize-none text-white placeholder:text-slate-700 font-medium" />
+      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "Access Denied" : "Type something..."} className="flex-1 bg-transparent py-2.5 px-4 text-[13px] outline-none resize-none text-white placeholder:text-slate-700 font-medium custom-scroll" />
       <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-3 rounded-xl transition-all shadow-xl active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700'}`}><Icons.Send /></button>
     </div>
   );
 };
 
-const FileItem: React.FC<{ file: SharedFile, sender: string, canDelete: boolean, onDelete: () => void, onPreview: () => void }> = ({ file, sender, canDelete, onDelete, onPreview }) => {
+const FileItem: React.FC<{ file: SharedFile, sender: string, canDelete: boolean, onDelete: () => void, onPreview: () => void, onDownload: () => void }> = ({ file, sender, canDelete, onDelete, onPreview, onDownload }) => {
   const isImg = file.type.startsWith('image/');
   return (
     <div className="bg-[#121216] border border-white/5 rounded-2xl overflow-hidden shadow-xl group animate-in zoom-in-95 border-l-2 border-indigo-600 relative">
-      {canDelete && (
-        <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="absolute top-2 right-2 p-1.5 bg-rose-600/80 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity z-10"><Icons.X /></button>
-      )}
+      <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+        <button onClick={(e) => { e.stopPropagation(); onDownload(); }} className="p-1.5 bg-indigo-600 text-white rounded-lg shadow-lg hover:bg-indigo-500" title="Instant Download"><Icons.Download /></button>
+        {canDelete && (
+          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1.5 bg-rose-600/80 text-white rounded-lg hover:bg-rose-600" title="Remove"><Icons.X /></button>
+        )}
+      </div>
       <div className="cursor-pointer aspect-video bg-black flex items-center justify-center relative overflow-hidden" onClick={onPreview}>
          {isImg ? <div className="text-slate-800 scale-150"><Icons.Sparkles /></div> : <div className="text-slate-800"><Icons.File /></div>}
          <div className="absolute inset-0 flex items-center justify-center bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity">
