@@ -37,7 +37,12 @@ const getBlob = async (key: string): Promise<Blob | null> => {
 };
 
 // --- Storage Utils ---
-const saveToStorage = (key: string, data: any) => localStorage.setItem(key, JSON.stringify(data));
+const saveToStorage = (key: string, data: any) => {
+  localStorage.setItem(key, JSON.stringify(data));
+  // Manually trigger storage event for the same tab sync if needed (usually for other tabs)
+  window.dispatchEvent(new StorageEvent('storage', { key }));
+};
+
 const getFromStorage = (key: string) => {
   const data = localStorage.getItem(key);
   return data ? JSON.parse(data) : null;
@@ -46,7 +51,7 @@ const getFromStorage = (key: string) => {
 const safeClearUrl = () => {
   try {
     const url = new URL(window.location.href);
-    if (url.protocol !== 'blob:') {
+    if (url.searchParams.has('room')) {
       url.searchParams.delete('room');
       window.history.replaceState({}, '', url.pathname);
     }
@@ -112,7 +117,7 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#050505] p-6">
-      <div className="bg-[#0f0f12] border border-white/10 p-10 rounded-3xl w-full max-w-md shadow-[0_0_50px_rgba(0,0,0,0.5)] transform animate-in fade-in zoom-in-95 duration-500">
+      <div className="bg-[#0f0f12] border border-white/10 p-10 rounded-3xl w-full max-w-md shadow-2xl transform animate-in fade-in zoom-in-95 duration-500">
         <div className="w-16 h-16 bg-indigo-600/20 text-indigo-500 rounded-2xl flex items-center justify-center mx-auto mb-6 border border-indigo-500/20">
           <Icons.Video />
         </div>
@@ -122,7 +127,7 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
             <h1 className="text-3xl font-black text-white italic uppercase mb-2">Collab Lab</h1>
             <p className="text-slate-500 text-[10px] mb-10 uppercase tracking-[0.3em] font-bold">Fast Workspace Hub</p>
             <div className="space-y-3">
-              <button onClick={() => setMode('guest')} className="w-full bg-indigo-600 text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-500 shadow-xl shadow-indigo-600/20 transition-all">Create Fast Group</button>
+              <button onClick={() => setMode('guest')} className="w-full bg-indigo-600 text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-indigo-500 transition-all">Create Fast Group</button>
               <button onClick={() => setMode('join-code')} className="w-full bg-white/5 border border-white/10 text-white py-4 rounded-xl font-black uppercase text-xs tracking-widest hover:bg-white/10 transition-all">Join with Code</button>
               <button onClick={() => setMode('login')} className="w-full text-indigo-400 py-3 font-black uppercase text-[10px] tracking-widest hover:text-white underline">Sign In</button>
             </div>
@@ -169,11 +174,8 @@ export default function App() {
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [selectedFile, setSelectedFile] = useState<SharedFile | null>(null);
-  const [viewedUser, setViewedUser] = useState<User | null>(null);
   const [lastSentTime, setLastSentTime] = useState(0);
-  const [liveTab, setLiveTab] = useState<'chat' | 'ask'>('chat');
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
-  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<Message[]>([]);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -183,81 +185,73 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  useEffect(() => {
-    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, optimisticMessages]);
-
   const isOnline = (u: User | string) => {
     const target = typeof u === 'string' ? allUsers.find(au => au.id === u) : u;
     return target?.lastSeen && (Date.now() - target.lastSeen < 12000);
   };
 
+  // Immediate update on group switch
+  useEffect(() => {
+    setMessages([]);
+    setOptimisticMessages([]);
+    setReplyingTo(null);
+    if (activeGroupId) fetchData();
+  }, [activeGroupId]);
+
+  const fetchData = () => {
+    if (!user) return;
+    const users: User[] = getFromStorage('cl_users') || [];
+    const allGroups: Group[] = getFromStorage('cl_groups') || [];
+    
+    setAllUsers(users);
+    setGroups(allGroups.filter(g => g.members.includes(user.id) || g.id === 'live-space'));
+
+    if (activeGroupId) {
+      const msgKey = `cl_msgs_${activeGroupId}`;
+      const groupMsgs: Message[] = getFromStorage(msgKey) || [];
+      const filtered = groupMsgs.filter(m => m.type === 'system' || isOnline(m.senderId));
+      
+      setMessages(filtered);
+      setOptimisticMessages(prev => prev.filter(om => !filtered.some(fm => fm.id === om.id)));
+    }
+  };
+
+  // Real-time sync across tabs
+  useEffect(() => {
+    const sync = (e: StorageEvent) => fetchData();
+    window.addEventListener('storage', sync);
+    const interval = setInterval(fetchData, 1500);
+    return () => {
+      window.removeEventListener('storage', sync);
+      clearInterval(interval);
+    };
+  }, [user, activeGroupId, allUsers]);
+
+  // Heartbeat
+  useEffect(() => {
+    if (!user) return;
+    const beat = setInterval(() => {
+      const users: User[] = getFromStorage('cl_users') || [];
+      const meIdx = users.findIndex(u => u.id === user.id);
+      if (meIdx > -1) {
+        users[meIdx].lastSeen = Date.now();
+        saveToStorage('cl_users', users);
+      }
+    }, 5000);
+    return () => clearInterval(beat);
+  }, [user]);
+
   const activeGroup = useMemo(() => groups.find(g => g.id === activeGroupId), [groups, activeGroupId]);
 
-  // FIX: Added missing usersInCall calculation
   const usersInCall = useMemo(() => {
     if (!activeGroup || !activeGroup.inCall) return [];
     return allUsers.filter(u => activeGroup.inCall!.includes(u.id));
   }, [activeGroup, allUsers]);
 
-  // FIX: Added missing handleCallAction function
-  const handleCallAction = (action: 'join' | 'leave') => {
-    if (!user || !activeGroupId) return;
-    const all: Group[] = getFromStorage('cl_groups') || [];
-    const idx = all.findIndex(g => g.id === activeGroupId);
-    if (idx > -1) {
-      let inCall = all[idx].inCall || [];
-      if (action === 'join') {
-        if (!inCall.includes(user.id)) inCall = [...inCall, user.id];
-      } else {
-        inCall = inCall.filter(uid => uid !== user.id);
-      }
-      all[idx].inCall = inCall;
-      saveToStorage('cl_groups', all);
-      setGroups(all.filter(g => g.members.includes(user.id) || g.id === 'live-space'));
-    }
-  };
-
-  useEffect(() => {
-    if (!user) return;
-    const interval = setInterval(() => {
-      const users: User[] = getFromStorage('cl_users') || [];
-      const meIdx = users.findIndex(u => u.id === user.id);
-      const allGroups: Group[] = getFromStorage('cl_groups') || [];
-      const currentG = allGroups.find(g => g.id === activeGroupId);
-
-      if (meIdx > -1) {
-        users[meIdx].lastSeen = Date.now();
-        users[meIdx].isSpeaking = currentG?.inCall?.includes(user.id) ? Math.random() > 0.7 : false;
-        saveToStorage('cl_users', users);
-        setAllUsers(users);
-      } else if (user.isGuest) {
-        setAllUsers(prev => {
-          const others = prev.filter(p => p.id !== user.id);
-          const updatedMe = { ...user, lastSeen: Date.now(), isSpeaking: currentG?.inCall?.includes(user.id) ? Math.random() > 0.7 : false };
-          return [...others, updatedMe];
-        });
-      }
-
-      setGroups(allGroups.filter(g => g.members.includes(user.id) || g.id === 'live-space'));
-
-      if (activeGroupId) {
-        const msgKey = `cl_msgs_${activeGroupId}`;
-        const groupMsgs: Message[] = getFromStorage(msgKey) || [];
-        const filtered = groupMsgs.filter(m => m.type === 'system' || isOnline(m.senderId));
-        
-        // Remove optimistic messages if they now exist in the main message list (polled)
-        setOptimisticMessages(prev => prev.filter(om => !filtered.some(fm => fm.id === om.id)));
-        setMessages(filtered);
-      }
-    }, 1500);
-    return () => clearInterval(interval);
-  }, [user, activeGroupId, allUsers]);
-
   const handleAuthSuccess = (u: User, autoGroupId?: string) => {
     setUser(u);
     if (autoGroupId) {
-      const all = getFromStorage('cl_groups') || [];
+      const all: Group[] = getFromStorage('cl_groups') || [];
       const gIdx = all.findIndex((g:any) => g.id === autoGroupId);
       if (gIdx > -1) {
         if (!all[gIdx].members.includes(u.id)) {
@@ -265,10 +259,14 @@ export default function App() {
           saveToStorage('cl_groups', all);
           sendSystemMessage(autoGroupId, `${u.username} has entered the lab.`);
         }
-        setActiveGroupId(autoGroupId);
         setGroups(all.filter((g:any) => g.members.includes(u.id) || g.id === 'live-space'));
+        setActiveGroupId(autoGroupId);
         safeClearUrl();
-      } else { showToast("Lab not found!", 'err'); }
+      } else { 
+        showToast("Lab not found!", 'err'); 
+      }
+    } else {
+      setActiveGroupId('live-space');
     }
   };
 
@@ -281,7 +279,7 @@ export default function App() {
 
   const handleSendMessage = async (text: string, file?: File) => {
     if (!user || !activeGroupId) return;
-    if (activeGroupId === 'live-space' && Date.now() - lastSentTime < 2000) { showToast("Slow down! 2s cooldown.", 'err'); return; }
+    if (activeGroupId === 'live-space' && Date.now() - lastSentTime < 1000) { showToast("1s cooldown.", 'err'); return; }
     
     let sharedFile: SharedFile | undefined;
     if (file) {
@@ -310,15 +308,30 @@ export default function App() {
     // Optimistic Update
     setOptimisticMessages(prev => [...prev, newMessage]);
 
-    // Async Save
-    setTimeout(() => {
-      const msgKey = `cl_msgs_${activeGroupId}`;
-      const all = getFromStorage(msgKey) || [];
-      saveToStorage(msgKey, [...all, newMessage]);
-    }, 100);
+    // Instant Save
+    const msgKey = `cl_msgs_${activeGroupId}`;
+    const all = getFromStorage(msgKey) || [];
+    saveToStorage(msgKey, [...all, newMessage]);
 
     setReplyingTo(null);
     setLastSentTime(Date.now());
+  };
+
+  const handleCallAction = (action: 'join' | 'leave') => {
+    if (!user || !activeGroupId) return;
+    const all: Group[] = getFromStorage('cl_groups') || [];
+    const idx = all.findIndex(g => g.id === activeGroupId);
+    if (idx > -1) {
+      let inCall = all[idx].inCall || [];
+      if (action === 'join') {
+        if (!inCall.includes(user.id)) inCall = [...inCall, user.id];
+      } else {
+        inCall = inCall.filter(uid => uid !== user.id);
+      }
+      all[idx].inCall = inCall;
+      saveToStorage('cl_groups', all);
+      fetchData();
+    }
   };
 
   const handleCreateGroup = () => {
@@ -334,6 +347,10 @@ export default function App() {
   };
 
   const combinedMessages = useMemo(() => [...messages, ...optimisticMessages], [messages, optimisticMessages]);
+
+  useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [combinedMessages]);
 
   if (!user) return <AuthPage onAuth={handleAuthSuccess} />;
 
@@ -384,29 +401,33 @@ export default function App() {
                   <h2 className="font-black text-sm text-white italic uppercase tracking-tighter">{activeGroup.name}</h2>
                   {activeGroup.id !== 'live-space' && (
                     <button onClick={() => {
-                      navigator.clipboard.writeText(activeGroup.id);
-                      showToast("Code Copied: " + activeGroup.id);
+                      const link = `${window.location.origin}${window.location.pathname}?room=${activeGroup.id}`;
+                      navigator.clipboard.writeText(link);
+                      showToast("Direct Link Copied!");
                     }} className="flex items-center gap-2 px-3 py-1.5 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[8px] font-black uppercase tracking-widest border border-white/5">
-                      <Icons.Copy /> {activeGroup.id}
+                      <Icons.Copy /> Copy Link
                     </button>
                   )}
                </div>
                <div className="flex items-center gap-4">
                   <div className="flex -space-x-1.5">
-                    {allUsers.filter(u => activeGroup.members.includes(u.id)).slice(0, 5).map(m => (
-                      <img key={m.id} src={m.avatar} className={`w-7 h-7 rounded-lg border-2 transition-all ${m.isSpeaking ? 'border-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] scale-110' : 'border-[#050505]'}`} />
+                    {allUsers.filter(u => activeGroup.members.includes(u.id) || activeGroup.id === 'live-space').slice(0, 5).map(m => (
+                      <img key={m.id} src={m.avatar} className={`w-7 h-7 rounded-lg border-2 border-[#050505]`} />
                     ))}
                   </div>
-                  <button onClick={() => setShowAbout(true)} className="text-[8px] bg-white/5 px-3 py-1.5 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">Members</button>
+                  <button onClick={() => setShowAbout(true)} className="text-[8px] bg-white/5 px-3 py-1.5 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">About</button>
                </div>
             </div>
 
             <div className="flex-1 flex overflow-hidden">
               <div className="flex-1 flex flex-col relative">
                 <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                  {combinedMessages.length === 0 && (
+                    <div className="h-full flex flex-center items-center justify-center opacity-10 italic text-[10px] uppercase font-black tracking-widest">No messages yet</div>
+                  )}
                   {combinedMessages.map(msg => (
                     msg.type === 'system' ? (
-                      <div key={msg.id} className="text-center py-2"><span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest italic">{msg.text}</span></div>
+                      <div key={msg.id} className="text-center py-4"><span className="px-4 py-1.5 rounded-full bg-emerald-500/10 text-[9px] font-black text-emerald-400 uppercase tracking-widest italic border border-emerald-500/20">{msg.text}</span></div>
                     ) : (
                       <MessageComponent key={msg.id} msg={msg} me={user!} onReply={() => setReplyingTo(msg)} onReact={(id:string,e:string) => {
                         const msgKey = `cl_msgs_${activeGroupId}`;
@@ -421,12 +442,14 @@ export default function App() {
                           } else { reactions.push({emoji: e, userIds: [user.id]}); }
                           all[idx].reactions = reactions.filter((r:Reaction)=>r.userIds.length > 0);
                           saveToStorage(msgKey, all);
+                          fetchData();
                         }
                       }} onDelete={() => {
                         const msgKey = `cl_msgs_${activeGroupId}`;
                         const all = getFromStorage(msgKey) || [];
                         saveToStorage(msgKey, all.filter((m:any)=>m.id!==msg.id));
                         showToast("Message Deleted");
+                        fetchData();
                       }} />
                     )
                   ))}
@@ -437,31 +460,31 @@ export default function App() {
                   <div className="max-w-4xl mx-auto flex flex-col gap-2">
                     {replyingTo && (
                       <div className="bg-indigo-600/10 p-2 rounded-xl flex items-center justify-between border-l-4 border-indigo-600 text-[10px]">
-                         <span className="font-black uppercase text-indigo-400">Replying to {replyingTo.senderName}</span>
+                         <span className="font-black uppercase text-indigo-400 pl-2">Replying to {replyingTo.senderName}</span>
                          <button onClick={() => setReplyingTo(null)} className="p-1"><Icons.X /></button>
                       </div>
                     )}
                     <div className="flex gap-3 items-center">
-                      {activeGroup.id !== 'live-space' && (
-                        <button onClick={() => handleCallAction(activeGroup.inCall?.includes(user.id) ? 'leave' : 'join')} className={`p-3.5 rounded-2xl transition-all ${activeGroup.inCall?.includes(user.id) ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/20' : 'bg-white/5 text-indigo-500 hover:bg-white/10'}`}>
+                      {activeGroupId !== 'live-space' && (
+                        <button onClick={() => handleCallAction(activeGroup?.inCall?.includes(user.id) ? 'leave' : 'join')} className={`p-3.5 rounded-2xl transition-all ${activeGroup?.inCall?.includes(user.id) ? 'bg-rose-600 text-white shadow-xl shadow-rose-600/20' : 'bg-white/5 text-indigo-500 hover:bg-white/10 border border-white/5'}`}>
                           <Icons.Phone />
                         </button>
                       )}
-                      <ChatInput onSend={handleSendMessage} disabled={activeGroup.mutedMembers?.includes(user.id)} />
+                      <ChatInput onSend={handleSendMessage} disabled={activeGroup?.mutedMembers?.includes(user.id)} />
                     </div>
                   </div>
                 </div>
               </div>
 
               {/* ASSET LAB (Hidden in Live Hub) */}
-              {activeGroup.id !== 'live-space' && (
+              {activeGroupId !== 'live-space' && (
                 <div className="w-[340px] bg-[#0a0a0c] border-l border-white/5 flex flex-col shrink-0">
                   <div className="p-5 border-b border-white/5 bg-indigo-600/5">
                      <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest italic">CALL LAB</span>
                      <div className="mt-4 space-y-2">
                         {usersInCall.map(u => (
                           <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${u.isSpeaking ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30' : 'bg-white/5'}`}>
-                            <img src={u.avatar} className={`w-7 h-7 rounded-lg ${u.isSpeaking ? 'ring-2 ring-emerald-500 animate-pulse' : ''}`} />
+                            <img src={u.avatar} className={`w-7 h-7 rounded-lg ${u.isSpeaking ? 'ring-2 ring-emerald-500' : ''}`} />
                             <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{u.username}</span>
                             {u.isSpeaking && <div className="flex gap-0.5 ml-auto"><div className="w-0.5 h-3 bg-emerald-500 animate-bounce"></div><div className="w-0.5 h-3 bg-emerald-500 animate-bounce delay-75"></div></div>}
                           </div>
@@ -493,7 +516,7 @@ export default function App() {
       {/* MODALS */}
       {showCreateGroup && (
         <div className="fixed inset-0 bg-black/90 z-[500] flex items-center justify-center p-6" onClick={() => setShowCreateGroup(false)}>
-           <div className="bg-[#0f0f12] border border-white/10 p-8 rounded-3xl w-full max-sm shadow-2xl" onClick={e => e.stopPropagation()}>
+           <div className="bg-[#0f0f12] border border-white/10 p-8 rounded-3xl w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
               <h3 className="text-lg font-black text-white italic uppercase tracking-tighter mb-6 text-center">New Lab</h3>
               <input type="text" placeholder="Lab Name..." className="w-full bg-[#16161a] border border-white/5 px-5 py-4 rounded-xl focus:border-indigo-500 outline-none text-white font-bold mb-4" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} />
               <button onClick={() => { handleCreateGroup(); setShowCreateGroup(false); }} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-indigo-500 transition-all shadow-lg shadow-indigo-600/20">Create Lab</button>
@@ -501,7 +524,7 @@ export default function App() {
         </div>
       )}
 
-      {showAbout && activeGroup && (
+      {showAbout && activeGroupId && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[500] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-3xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
               <div className="flex justify-between items-center mb-6">
@@ -509,12 +532,12 @@ export default function App() {
                  <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
               </div>
               <div className="space-y-2.5">
-                {allUsers.filter(u => activeGroup.members.includes(u.id)).map(m => (
+                {allUsers.filter(u => activeGroupId === 'live-space' ? true : activeGroup?.members?.includes(u.id)).map(m => (
                   <div key={m.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
                     <div className="flex items-center gap-3">
                       <img src={m.avatar} className="w-8 h-8 rounded-lg" />
                       <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{m.username}</span>
-                      {m.id === activeGroup.ownerId && <span className="text-[7px] bg-indigo-600 text-white px-1.5 py-0.5 rounded-full uppercase font-bold border border-white/10">Admin</span>}
+                      {activeGroup?.ownerId === m.id && <span className="text-[7px] bg-indigo-600 text-white px-1.5 py-0.5 rounded-full uppercase font-bold border border-white/10">Admin</span>}
                     </div>
                   </div>
                 ))}
@@ -558,10 +581,10 @@ const MessageComponent = ({ msg, me, onReply, onReact, onDelete }: any) => {
       <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${msg.senderName}`} className="w-8 h-8 rounded-lg bg-black shrink-0 border border-white/5" />
       <div className={`flex flex-col max-w-[80%] relative ${msg.senderId === me.id ? 'items-end' : ''}`}>
         <span className="text-[8px] font-black uppercase tracking-[0.2em] mb-1 px-1 opacity-40 italic">
-          {msg.senderName} {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+          {msg.senderName} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
         </span>
         
-        <div className={`p-3 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
+        <div className={`p-2.5 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
           {msg.text}
         </div>
 
@@ -598,7 +621,7 @@ const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean }> =
   const [text, setText] = useState('');
   const handleSend = () => { if(text.trim() && !disabled) { onSend(text); setText(''); } };
   return (
-    <div className={`flex-1 flex items-end gap-2 bg-[#0f0f12] border border-white/5 rounded-2xl p-2.5 focus-within:border-indigo-500/40 transition-all ${disabled ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}>
+    <div className={`flex-1 flex items-end gap-2 bg-[#0f0f12] border border-white/5 rounded-2xl p-2 focus-within:border-indigo-500/40 transition-all ${disabled ? 'opacity-40 grayscale cursor-not-allowed' : ''}`}>
       <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "Access Denied" : "Type something..."} className="flex-1 bg-transparent py-2.5 px-4 text-[13px] outline-none resize-none text-white placeholder:text-slate-700 font-medium" />
       <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-3 rounded-xl transition-all shadow-xl active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white shadow-indigo-600/30' : 'bg-white/5 text-slate-700'}`}><Icons.Send /></button>
     </div>
@@ -610,7 +633,7 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, onPreview: () => vo
   return (
     <div className="bg-[#121216] border border-white/5 rounded-2xl overflow-hidden shadow-xl group animate-in zoom-in-95 border-l-2 border-indigo-600">
       <div className="cursor-pointer aspect-video bg-black flex items-center justify-center relative overflow-hidden" onClick={onPreview}>
-         {isImg ? <img src={file.url.startsWith('f_') ? 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400&q=80' : file.url} className="w-full h-full object-cover group-hover:scale-105 transition-all duration-700 opacity-60" /> : <div className="text-slate-800"><Icons.File /></div>}
+         {isImg ? <div className="text-slate-800 scale-150"><Icons.Sparkles /></div> : <div className="text-slate-800"><Icons.File /></div>}
          <div className="absolute inset-0 flex items-center justify-center bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity">
             <span className="text-[9px] font-black text-white uppercase tracking-widest bg-black/50 px-3 py-1.5 rounded-full">Open</span>
          </div>
