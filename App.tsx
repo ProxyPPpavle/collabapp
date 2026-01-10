@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { User, Group, Message, SharedFile, Reaction } from './types';
 import { PLAN_LIMITS, EXPIRY_DURATION, Icons, CHAT_COLORS, getContrastColor, EMOJIS } from './constants';
@@ -183,6 +184,7 @@ export default function App() {
   const [toast, setToast] = useState<{ m: string; t: 'ok' | 'err' } | null>(null);
   const [showAbout, setShowAbout] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showInbox, setShowInbox] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [friendSearch, setFriendSearch] = useState('');
   const [selectedFile, setSelectedFile] = useState<SharedFile | null>(null);
@@ -376,6 +378,7 @@ export default function App() {
     if (idx > -1) {
       if (action === 'kick') {
         all[idx].members = all[idx].members.filter(m => m !== targetId);
+        sendSystemMessage(activeGroupId, `User removed by Admin.`);
       } else if (action === 'mute') {
         const muted = all[idx].mutedMembers || [];
         if (!muted.includes(targetId)) all[idx].mutedMembers = [...muted, targetId];
@@ -387,7 +390,6 @@ export default function App() {
     }
   };
 
-  // Fix: Implement missing handleCallAction to manage group call membership status
   const handleCallAction = (action: 'join' | 'leave') => {
     if (!user || !activeGroupId) return;
     const all: Group[] = getFromStorage('cl_groups') || [];
@@ -397,11 +399,11 @@ export default function App() {
       if (action === 'join') {
         if (!inCall.includes(user.id)) {
           all[idx].inCall = [...inCall, user.id];
-          sendSystemMessage(activeGroupId, `${user.username} joined the call.`);
+          sendSystemMessage(activeGroupId, `${user.username} joined call.`);
         }
       } else {
         all[idx].inCall = inCall.filter(id => id !== user.id);
-        sendSystemMessage(activeGroupId, `${user.username} left the call.`);
+        sendSystemMessage(activeGroupId, `${user.username} left call.`);
       }
       saveToStorage('cl_groups', all);
       fetchData();
@@ -446,6 +448,23 @@ export default function App() {
     showToast("Lab Created!");
   };
 
+  const handleAddMemberToGroup = (friendId: string) => {
+    if (!activeGroup || !user) return;
+    const all: Group[] = getFromStorage('cl_groups') || [];
+    const idx = all.findIndex(g => g.id === activeGroupId);
+    if (idx > -1) {
+      if (!all[idx].members.includes(friendId)) {
+        all[idx].members.push(friendId);
+        saveToStorage('cl_groups', all);
+        sendSystemMessage(activeGroup.id, `Member added by ${user.username}.`);
+        fetchData();
+        showToast("Member Added!");
+      } else {
+        showToast("Already a member!", "err");
+      }
+    }
+  };
+
   const chatMessages = useMemo(() => {
     return [...messages, ...optimisticMessages].filter(m => m.type !== 'file');
   }, [messages, optimisticMessages]);
@@ -480,69 +499,25 @@ export default function App() {
     <div className="flex h-screen bg-[#050505] text-slate-300 overflow-hidden font-sans select-none">
       
       {/* 1. SOCIAL SIDEBAR (Far Left) */}
-      <div className="w-[180px] bg-[#0a0a0c] border-r border-white/5 flex flex-col shrink-0 z-40">
-        <div className="p-6 border-b border-white/5">
-           <span className="font-black text-[9px] uppercase tracking-[0.2em] text-indigo-400 italic">SOCIAL</span>
+      <div className="w-[200px] bg-[#0a0a0c] border-r border-white/5 flex flex-col shrink-0 z-40">
+        <div className="p-4 border-b border-white/5 flex items-center justify-between">
+           <span className="font-black text-[9px] uppercase tracking-[0.2em] text-indigo-400 italic">CONNECTIONS</span>
+           {!user.isGuest && (
+             <button onClick={() => setShowInbox(true)} className="p-2 bg-white/5 text-slate-500 rounded-lg hover:bg-indigo-600 hover:text-white transition-all relative">
+                <Icons.Mail />
+                {(user.friendRequests || []).length > 0 && <div className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></div>}
+             </button>
+           )}
         </div>
         
-        <div className="flex-1 overflow-y-auto custom-scroll p-4 space-y-8">
-           {/* Inbox */}
+        <div className="flex-1 overflow-y-auto custom-scroll p-3 space-y-4">
+           {/* Add Friend - Now at the Top */}
            {!user.isGuest && (
-             <div>
-                <span className="text-[8px] font-black uppercase text-slate-600 tracking-widest block mb-4">Inbox</span>
-                <div className="space-y-2">
-                   {(user.friendRequests || []).length === 0 ? (
-                      <p className="text-[7px] text-slate-800 italic uppercase font-bold">Empty</p>
-                   ) : (
-                      user.friendRequests?.map(id => {
-                        const requester = allUsers.find(au => au.id === id);
-                        return requester ? (
-                          <div key={id} className="bg-white/5 p-2 rounded-xl flex items-center justify-between group">
-                            <img src={requester.avatar} className="w-6 h-6 rounded-lg" />
-                            <div className="flex gap-1">
-                               <button onClick={() => handleSocialAction(id, 'accept')} className="p-1.5 text-indigo-500 hover:bg-indigo-600 hover:text-white rounded-lg transition-all"><Icons.Plus /></button>
-                               <button onClick={() => handleSocialAction(id, 'deny')} className="p-1.5 text-rose-500 hover:bg-rose-600 hover:text-white rounded-lg transition-all"><Icons.X /></button>
-                            </div>
-                          </div>
-                        ) : null;
-                      })
-                   )}
-                </div>
-             </div>
-           )}
-
-           {/* Friends List */}
-           <div>
-              <span className="text-[8px] font-black uppercase text-slate-600 tracking-widest block mb-4">Friends</span>
-              <div className="space-y-2">
-                 {user.friends?.length === 0 ? (
-                    <p className="text-[7px] text-slate-800 italic uppercase font-bold">No friends</p>
-                 ) : (
-                    user.friends?.map(fId => {
-                      const friend = allUsers.find(u => u.id === fId);
-                      if (!friend) return null;
-                      return (
-                        <div key={fId} className="flex flex-col items-center gap-2 p-2 rounded-xl hover:bg-white/5 transition-all cursor-pointer group">
-                          <div className="relative">
-                            <img src={friend.avatar} className="w-10 h-10 rounded-2xl grayscale group-hover:grayscale-0 transition-all border border-white/5" />
-                            {isOnline(friend) && <div className="absolute -bottom-1 -right-1 w-3 h-3 rounded-full bg-emerald-500 border-2 border-[#0a0a0c]"></div>}
-                          </div>
-                          <span className="text-[9px] font-black uppercase text-slate-400 group-hover:text-white truncate w-full text-center">{friend.username}</span>
-                        </div>
-                      );
-                    })
-                 )}
-              </div>
-           </div>
-
-           {/* Add Friend */}
-           {!user.isGuest && (
-             <div className="pt-4 border-t border-white/5">
-                <span className="text-[8px] font-black uppercase text-slate-600 tracking-widest block mb-4">Find User</span>
+             <div className="px-1 mb-2">
                 <input 
                   type="text" 
-                  placeholder="USERNAME..." 
-                  className="w-full bg-white/5 border border-white/5 rounded-lg px-2 py-2 text-[9px] outline-none focus:border-indigo-500 transition-all uppercase font-bold" 
+                  placeholder="SEARCH USER..." 
+                  className="w-full bg-white/5 border border-white/5 rounded-xl px-3 py-2.5 text-[9px] outline-none focus:border-indigo-500 transition-all uppercase font-bold text-white italic" 
                   value={friendSearch} 
                   onChange={e => setFriendSearch(e.target.value)}
                   onKeyDown={e => {
@@ -555,51 +530,72 @@ export default function App() {
                 />
              </div>
            )}
+
+           {/* Friends List - Compact Design */}
+           <div className="space-y-1">
+              {user.friends?.length === 0 ? (
+                 <p className="text-[7px] text-slate-800 italic uppercase font-bold text-center py-4">No friends added</p>
+              ) : (
+                 user.friends?.map(fId => {
+                   const friend = allUsers.find(u => u.id === fId);
+                   if (!friend) return null;
+                   return (
+                     <div key={fId} className="flex items-center gap-2.5 p-2 rounded-xl hover:bg-white/5 transition-all cursor-pointer group">
+                       <div className="relative shrink-0">
+                         <img src={friend.avatar} className="w-8 h-8 rounded-lg grayscale group-hover:grayscale-0 transition-all border border-white/5" />
+                         {isOnline(friend) && <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border-2 border-[#0a0a0c]"></div>}
+                       </div>
+                       <div className="flex-1 min-w-0">
+                         <p className="text-[10px] font-black uppercase text-slate-400 group-hover:text-white truncate italic">{friend.username}</p>
+                         <p className="text-[7px] font-bold text-slate-700 uppercase tracking-widest">{isOnline(friend) ? 'Active' : 'Offline'}</p>
+                       </div>
+                     </div>
+                   );
+                 })
+              )}
+           </div>
         </div>
       </div>
 
       {/* 2. WORKSPACE SIDEBAR (Middle) */}
-      <div className="w-[240px] bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0 z-30 shadow-2xl">
-        <div className="p-6 border-b border-white/5 flex items-center justify-between">
-          <span className="font-black text-[10px] uppercase tracking-[0.2em] text-indigo-400 italic">WORKSPACE</span>
+      <div className="w-[220px] bg-[#0f0f12] border-r border-white/5 flex flex-col shrink-0 z-30 shadow-2xl">
+        <div className="p-4 border-b border-white/5 flex items-center justify-between h-14">
+          <span className="font-black text-[9px] uppercase tracking-[0.2em] text-indigo-400 italic">RESEARCH LABS</span>
         </div>
         
         <div className="flex-1 overflow-y-auto p-3 space-y-6 custom-scroll">
-          <div>
-            <button onClick={() => handleSwitchGroup('live-space')} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
-              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
-              <span className="text-[10px] font-black uppercase tracking-widest italic">Live Hub</span>
-            </button>
-          </div>
-
-          <div>
-             <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest block mb-4 px-1">Research Labs</span>
-             <div className="space-y-1.5">
-                {groups.filter(g => g.id !== 'live-space').map(g => (
-                  <button key={g.id} onClick={() => handleSwitchGroup(g.id)} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
-                    <div className="w-1.5 h-1.5 rounded-full bg-slate-700"></div>
-                    <span className="text-[10px] font-black truncate uppercase tracking-tighter italic">{g.name}</span>
-                  </button>
-                ))}
-             </div>
-          </div>
-
+          {/* Create Lab - Now at the Top */}
           {!user.isGuest && (
-            <div className="pt-4 border-t border-white/5">
-              <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest block mb-4 px-1">Start New Lab</span>
-              <div className="flex flex-col gap-2">
+            <div className="mb-4">
+              <div className="flex items-center gap-2 bg-indigo-600/5 border border-indigo-500/10 rounded-2xl p-1.5 pr-3">
                 <input 
                   type="text" 
-                  placeholder="LAB NAME..." 
-                  className="w-full bg-white/5 border border-white/5 rounded-xl px-4 py-3 text-[10px] outline-none focus:border-indigo-500 transition-all font-bold uppercase italic"
+                  placeholder="NEW LAB..." 
+                  className="flex-1 bg-transparent px-3 py-2 text-[10px] outline-none text-white font-bold uppercase italic placeholder:text-slate-700"
                   value={newGroupName}
                   onChange={e => setNewGroupName(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleCreateGroup()}
                 />
-                <button onClick={handleCreateGroup} className="w-full py-3 bg-indigo-600/10 text-indigo-500 rounded-xl font-black uppercase text-[10px] hover:bg-indigo-600 hover:text-white transition-all">Create +</button>
+                <button onClick={handleCreateGroup} className="p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-500 transition-all shadow-lg"><Icons.Plus /></button>
               </div>
             </div>
           )}
+
+          <div>
+            <button onClick={() => handleSwitchGroup('live-space')} className={`w-full flex items-center gap-3 p-3.5 rounded-2xl transition-all border ${activeGroupId === 'live-space' ? 'bg-indigo-600 text-white shadow-lg border-indigo-500' : 'hover:bg-white/5 border-transparent opacity-60'}`}>
+              <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></div>
+              <span className="text-[10px] font-black uppercase tracking-widest italic">Live Hub</span>
+            </button>
+          </div>
+
+          <div className="space-y-1">
+             {groups.filter(g => g.id !== 'live-space').map(g => (
+               <button key={g.id} onClick={() => handleSwitchGroup(g.id)} className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all border ${activeGroupId === g.id ? 'bg-[#1a1a20] text-white border-white/10 shadow-md' : 'hover:bg-white/5 border-transparent opacity-80'}`}>
+                 <div className="w-1 h-1 rounded-full bg-slate-700"></div>
+                 <span className="text-[10px] font-black truncate uppercase tracking-tighter italic">{g.name}</span>
+               </button>
+             ))}
+          </div>
         </div>
 
         <div className="p-4 bg-black/40 border-t border-white/5">
@@ -623,7 +619,7 @@ export default function App() {
           </div>
         ) : (
           <>
-            <div className="h-16 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20">
+            <div className="h-14 border-b border-white/5 flex items-center justify-between px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20">
                <div className="flex items-center gap-4">
                   <h2 className="font-black text-sm text-white italic uppercase tracking-tighter">{activeGroup.name}</h2>
                   {activeGroupId !== 'live-space' && (
@@ -663,7 +659,7 @@ export default function App() {
                           <img key={m.id} src={m.avatar} className={`w-7 h-7 rounded-lg border-2 border-[#050505]`} />
                         ))}
                       </div>
-                      <button onClick={() => setShowAbout(true)} className="text-[8px] bg-white/5 px-3 py-1.5 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">Members</button>
+                      <button onClick={() => setShowAbout(true)} className="text-[8px] bg-white/5 px-3 py-1.5 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">Lab Lab</button>
                     </>
                   )}
                </div>
@@ -756,7 +752,7 @@ export default function App() {
                      <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest italic">CALL LAB</span>
                      <div className="mt-4 space-y-2">
                         {usersInCall.map(u => (
-                          <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${Math.random() > 0.6 ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30 shadow-[0_0_15px_rgba(16,185,129,0.1)]' : 'bg-white/5'}`}>
+                          <div key={u.id} className={`flex items-center gap-3 p-2.5 rounded-xl transition-all ${Math.random() > 0.6 ? 'bg-emerald-600/10 ring-1 ring-emerald-500/30' : 'bg-white/5'}`}>
                             <img src={u.avatar} className={`w-7 h-7 rounded-lg ${Math.random() > 0.6 ? 'ring-2 ring-emerald-500 animate-pulse' : ''}`} />
                             <span className="text-[10px] font-black uppercase text-white tracking-tighter italic">{u.username}</span>
                           </div>
@@ -799,6 +795,36 @@ export default function App() {
       </div>
 
       {/* MODALS */}
+      {showInbox && user && (
+        <div className="fixed inset-0 bg-black/90 z-[1000] flex items-center justify-center p-6" onClick={() => setShowInbox(false)}>
+           <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-sm p-10 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
+              <h3 className="text-xl font-black text-white italic uppercase tracking-widest mb-8 text-center">Inbox</h3>
+              <div className="space-y-4 max-h-[300px] overflow-y-auto custom-scroll pr-2">
+                 {(user.friendRequests || []).length === 0 ? (
+                    <div className="text-center py-10 opacity-20 italic uppercase font-black text-[10px]">No new notifications</div>
+                 ) : (
+                    user.friendRequests?.map(id => {
+                      const requester = allUsers.find(au => au.id === id);
+                      return requester ? (
+                        <div key={id} className="bg-white/5 p-4 rounded-3xl flex items-center justify-between group border border-white/5">
+                          <div className="flex items-center gap-3">
+                             <img src={requester.avatar} className="w-10 h-10 rounded-xl" />
+                             <span className="text-[10px] font-black uppercase text-white italic">{requester.username}</span>
+                          </div>
+                          <div className="flex gap-2">
+                             <button onClick={() => handleSocialAction(id, 'accept')} className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-lg hover:bg-indigo-500 transition-all"><Icons.Plus /></button>
+                             <button onClick={() => handleSocialAction(id, 'deny')} className="p-2.5 bg-white/5 text-rose-500 rounded-xl hover:bg-rose-600 hover:text-white transition-all"><Icons.X /></button>
+                          </div>
+                        </div>
+                      ) : null;
+                    })
+                 )}
+              </div>
+              <button onClick={() => setShowInbox(false)} className="w-full mt-10 py-4 bg-white/5 text-slate-500 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:text-white transition-all">Close</button>
+           </div>
+        </div>
+      )}
+
       {showProfile && user && (
         <div className="fixed inset-0 bg-black/95 z-[500] flex items-center justify-center p-6" onClick={() => setShowProfile(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-[40px] w-full max-w-md p-10 shadow-2xl animate-in zoom-in-95 overflow-hidden relative" onClick={e => e.stopPropagation()}>
@@ -832,7 +858,33 @@ export default function App() {
                  <h3 className="font-black italic text-sm uppercase tracking-widest text-white">Lab Members</h3>
                  <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
               </div>
-              <div className="space-y-2.5 mb-6 max-h-[400px] overflow-y-auto custom-scroll pr-2">
+              
+              {/* Add Members Button for Admin */}
+              {user.id === activeGroup.ownerId && (
+                <div className="mb-6">
+                   <span className="text-[8px] font-black uppercase text-indigo-400 tracking-widest block mb-3">Invite Friends</span>
+                   <div className="flex flex-col gap-1.5 max-h-[150px] overflow-y-auto custom-scroll pr-1">
+                      {user.friends?.filter(fid => !activeGroup.members.includes(fid)).length === 0 ? (
+                        <p className="text-[7px] text-slate-700 italic uppercase">All friends are in lab</p>
+                      ) : (
+                        user.friends?.filter(fid => !activeGroup.members.includes(fid)).map(fid => {
+                           const friend = allUsers.find(u => u.id === fid);
+                           return friend ? (
+                              <button key={fid} onClick={() => handleAddMemberToGroup(fid)} className="flex items-center justify-between p-2 rounded-xl bg-indigo-600/5 hover:bg-indigo-600/10 transition-all group/f">
+                                 <div className="flex items-center gap-2">
+                                    <img src={friend.avatar} className="w-6 h-6 rounded-lg" />
+                                    <span className="text-[9px] font-bold text-white uppercase">{friend.username}</span>
+                                 </div>
+                                 <Icons.Plus />
+                              </button>
+                           ) : null;
+                        })
+                      )}
+                   </div>
+                </div>
+              )}
+
+              <div className="space-y-2.5 mb-6 max-h-[300px] overflow-y-auto custom-scroll pr-2">
                 {allUsers.filter(u => activeGroup?.members?.includes(u.id)).map(m => (
                   <div key={m.id} className="flex items-center justify-between p-3 rounded-2xl bg-white/5 border border-white/5">
                     <div className="flex items-center gap-3">
@@ -914,7 +966,7 @@ const MessageComponent = ({ msg, me, isAdmin, onReply, onReact, onDelete, onEdit
           {msg.senderName} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} {msg.isEdited && "(edited)"}
         </span>
         
-        <div className={`p-2.5 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
+        <div className={`p-2.5 px-4 rounded-2xl text-[13px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none mr-2' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
           {isEditing ? (
             <div className="flex flex-col gap-2 min-w-[200px]">
               <textarea 
