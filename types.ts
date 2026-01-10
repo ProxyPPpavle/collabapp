@@ -1,38 +1,25 @@
 
-export type Plan = 'free' | 'pro' | 'premium';
+export type Plan = 'free' | 'pro' | 'premium' | 'guest';
 
 export interface User {
   id: string;
   username: string;
-  email: string;
+  email?: string;
   avatar: string;
   plan: Plan;
-  friends: string[]; // User IDs
+  friends: string[];
   lastSeen?: number;
-}
-
-export interface FriendRequest {
-  id: string;
-  fromId: string;
-  fromUsername: string;
-  toId: string;
-  timestamp: number;
-}
-
-export interface GroupInvite {
-  id: string;
-  groupId: string;
-  groupName: string;
-  fromUsername: string;
-  toId: string;
+  chatColor?: string;
+  isGuest?: boolean;
 }
 
 export interface Group {
   id: string;
   name: string;
   ownerId: string;
-  members: string[]; // User IDs
-  mutedMembers?: string[]; // IDs of users who can't speak
+  members: string[];
+  mutedMembers?: string[];
+  inCall?: string[]; // User IDs currently in voice call
   createdAt: number;
 }
 
@@ -42,10 +29,11 @@ export interface Message {
   senderId: string;
   senderName: string;
   text: string;
-  type: 'text' | 'file';
+  type: 'text' | 'file' | 'system';
   file?: SharedFile;
   timestamp: number;
   expiresAt: number;
+  color?: string;
 }
 
 export interface SharedFile {
