@@ -1,6 +1,11 @@
 
 export type Plan = 'free' | 'pro' | 'premium' | 'guest';
 
+export interface Reaction {
+  emoji: string;
+  userIds: string[];
+}
+
 export interface User {
   id: string;
   username: string;
@@ -11,6 +16,7 @@ export interface User {
   lastSeen?: number;
   chatColor?: string;
   isGuest?: boolean;
+  isSpeaking?: boolean; // Visual simulation for UI
 }
 
 export interface Group {
@@ -34,6 +40,9 @@ export interface Message {
   timestamp: number;
   expiresAt: number;
   color?: string;
+  replyToId?: string;
+  reactions?: Reaction[];
+  isEdited?: boolean;
 }
 
 export interface SharedFile {
