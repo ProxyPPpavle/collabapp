@@ -49,6 +49,25 @@ const getFromStorage = (key: string) => {
   return data ? JSON.parse(data) : null;
 };
 
+// --- Garbage Collection (Purge old messages) ---
+const cleanupExpiredMessages = () => {
+  const now = Date.now();
+  let keysToUpdate = [];
+  
+  // Iterate through all localStorage keys
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key?.startsWith('cl_msgs_')) {
+      const messages = JSON.parse(localStorage.getItem(key) || '[]');
+      // Filter out messages older than 24 hours
+      const filtered = messages.filter((m: Message) => (now - m.timestamp) < EXPIRY_DURATION);
+      if (filtered.length !== messages.length) {
+        localStorage.setItem(key, JSON.stringify(filtered));
+      }
+    }
+  }
+};
+
 const safeClearUrl = () => {
   try {
     const url = new URL(window.location.href);
@@ -83,6 +102,8 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
         const decoded = JSON.parse(atob(gdata));
         const allGroups = getFromStorage('cl_groups') || [];
         if (!allGroups.find((g: any) => g.id === decoded.id)) {
+           // Ensure Lab ID is uppercase
+           decoded.id = decoded.id.toUpperCase();
            allGroups.push(decoded);
            saveToStorage('cl_groups', allGroups);
         }
@@ -108,9 +129,8 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
         saveToStorage('cl_groups', [...all, newG]);
       } else if (mode === 'join-link') {
         targetRoomId = (roomToJoin || '').toUpperCase();
-        // If we have gdata but targetRoomId is missing (link only had gdata), try to use gdata id
         if (!targetRoomId && gdata) {
-           try { targetRoomId = JSON.parse(atob(gdata)).id; } catch(e) {}
+           try { targetRoomId = JSON.parse(atob(gdata)).id.toUpperCase(); } catch(e) {}
         }
       } else {
         targetRoomId = roomCode.toUpperCase();
@@ -243,23 +263,49 @@ export default function App() {
     }
 
     setAllUsers(users);
-    setGroups(allGroups.filter(g => g.members.includes(user.id) || g.id === 'live-space'));
-
+    
+    // Membership Propagation: Scan message history for unknown members
     if (activeGroupId) {
       const msgKey = `cl_msgs_${activeGroupId}`;
       const groupMsgs: Message[] = getFromStorage(msgKey) || [];
       setMessages(groupMsgs);
       setOptimisticMessages(prev => prev.filter(om => !groupMsgs.some(fm => fm.id === om.id)));
+      
+      const gIdx = allGroups.findIndex(g => g.id === activeGroupId);
+      if (gIdx > -1) {
+        let membersUpdated = false;
+        // 1. Ensure current user is in members list
+        if (!allGroups[gIdx].members.includes(user.id)) {
+          allGroups[gIdx].members.push(user.id);
+          membersUpdated = true;
+        }
+        // 2. Scan message history for unknown senders (Fix Ghost User issue)
+        groupMsgs.forEach(m => {
+          if (m.senderId !== 'system' && !allGroups[gIdx].members.includes(m.senderId)) {
+            allGroups[gIdx].members.push(m.senderId);
+            membersUpdated = true;
+          }
+        });
+        if (membersUpdated) {
+          saveToStorage('cl_groups', allGroups);
+        }
+      }
     }
+    
+    setGroups(allGroups.filter(g => g.members.includes(user.id) || g.id === 'live-space'));
   };
 
   useEffect(() => {
+    // Initial cleanup of old signals
+    cleanupExpiredMessages();
     const sync = (e: StorageEvent) => fetchData();
     window.addEventListener('storage', sync);
     const interval = setInterval(fetchData, 1500);
+    const cleanupInterval = setInterval(cleanupExpiredMessages, 5 * 60 * 1000); // Purge every 5 mins
     return () => {
       window.removeEventListener('storage', sync);
       clearInterval(interval);
+      clearInterval(cleanupInterval);
     };
   }, [user, activeGroupId]);
 
@@ -299,12 +345,12 @@ export default function App() {
         if (!all[gIdx].members.includes(u.id)) {
           all[gIdx].members.push(u.id);
           saveToStorage('cl_groups', all);
-          sendSystemMessage(all[gIdx].id, `${u.username} joined.`);
+          sendSystemMessage(all[gIdx].id, `${u.username} connected.`);
         }
         setActiveGroupId(all[gIdx].id);
         safeClearUrl();
       } else { 
-        showToast("Finding Hub...", 'ok'); 
+        showToast("Hub Initializing...", 'ok'); 
         setActiveGroupId('live-space');
       }
     } else {
@@ -373,7 +419,7 @@ export default function App() {
     if (idx > -1) {
       if (action === 'kick') {
         all[idx].members = all[idx].members.filter(m => m !== targetId);
-        sendSystemMessage(activeGroupId, `Member removed by Admin.`);
+        sendSystemMessage(activeGroupId, `User removed by Admin.`);
         showToast("Kicked.");
       }
       saveToStorage('cl_groups', all);
@@ -483,8 +529,6 @@ export default function App() {
     return messages.filter(m => m.type === 'file');
   }, [messages]);
 
-  const onlineCount = useMemo(() => allUsers.filter(u => isOnline(u)).length, [allUsers]);
-
   useEffect(() => {
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, activeTab]);
@@ -498,7 +542,7 @@ export default function App() {
            const result = await getFeedbackOnMessage(contextMessages, activeGroup?.name || "General Workspace");
            setAiFeedback(result);
         } else {
-           setAiFeedback("No message history available for analysis.");
+           setAiFeedback("Start chatting to generate research summaries.");
         }
         setIsAnalyzing(false);
       };
@@ -642,17 +686,16 @@ export default function App() {
           </div>
         ) : (
           <>
-            <div className="h-auto min-h-[56px] border-b border-white/5 flex flex-wrap items-center justify-between px-4 sm:px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20 py-2">
+            <div className="h-auto min-h-[56px] border-b border-white/5 flex items-center justify-between px-4 sm:px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20 py-2">
                <div className="flex items-center gap-2 sm:gap-3 min-w-0 mr-2">
                   <h2 className="font-black text-[11px] sm:text-[12px] text-white italic uppercase tracking-tighter truncate max-w-[120px] sm:max-w-none">{activeGroup.name}</h2>
                   {activeGroupId !== 'live-space' && (
                     <div className="flex gap-1.5 shrink-0">
                        <button onClick={() => {
-                        // CROSS-DEVICE SYNC: Generate link with encoded group data
                         const gdata = btoa(JSON.stringify({ id: activeGroup.id, name: activeGroup.name, ownerId: activeGroup.ownerId, members: activeGroup.members, createdAt: activeGroup.createdAt }));
                         const link = `${window.location.origin}${window.location.pathname}?room=${activeGroup.id}&gdata=${gdata}`;
                         navigator.clipboard.writeText(link);
-                        showToast("Invite Copied!");
+                        showToast("Invite Signal Copied!");
                       }} className="flex items-center gap-1 px-2 py-1 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[7px] font-black uppercase tracking-widest border border-white/5">
                         <Icons.Copy /> Link
                       </button>
@@ -663,7 +706,7 @@ export default function App() {
                   )}
                </div>
                
-               <div className="flex items-center gap-2 sm:gap-4 mt-2 sm:mt-0">
+               <div className="flex items-center gap-2 sm:gap-4">
                   {activeGroupId === 'live-space' && (
                     <div className="flex bg-white/5 rounded-xl p-0.5 border border-white/5">
                       <button onClick={() => setActiveTab('chat')} className={`px-2.5 py-1 rounded-lg text-[7px] sm:text-[8px] font-black uppercase tracking-widest transition-all ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Chat</button>
@@ -685,7 +728,7 @@ export default function App() {
                   <>
                     <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 custom-scroll">
                       {chatMessages.length === 0 && (
-                        <div className="h-full flex items-center justify-center opacity-10 italic text-[10px] uppercase font-black tracking-widest">No signals...</div>
+                        <div className="h-full flex items-center justify-center opacity-10 italic text-[10px] uppercase font-black tracking-widest">Quiet Signal...</div>
                       )}
                       {chatMessages.map(msg => (
                         msg.type === 'system' ? (
@@ -751,7 +794,7 @@ export default function App() {
                     <div className={`w-14 h-14 ${isAnalyzing ? 'animate-pulse bg-indigo-600/30' : 'bg-indigo-600/10'} text-indigo-500 rounded-3xl flex items-center justify-center mb-6`}>
                       <Icons.Sparkles />
                     </div>
-                    <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-2">Research Insights</h3>
+                    <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-2">Sync Insights</h3>
                     
                     <div className="max-w-xl w-full bg-white/5 border border-white/10 rounded-[30px] p-6 text-left relative overflow-hidden shadow-2xl">
                        <div className="absolute top-0 left-0 w-1 h-full bg-indigo-600"></div>
@@ -762,12 +805,12 @@ export default function App() {
                          </div>
                        ) : (
                          <div className="text-[10px] sm:text-[11px] leading-relaxed text-slate-300 italic whitespace-pre-wrap">
-                           {aiFeedback || "Start chatting to generate insights."}
+                           {aiFeedback || "Start chatting to generate insights. Data purges automatically after 24h."}
                          </div>
                        )}
                     </div>
                     
-                    <button onClick={() => setActiveTab('chat')} className="mt-8 px-6 py-2.5 bg-white/5 border border-white/10 rounded-2xl text-[7px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all text-indigo-400">Return</button>
+                    <button onClick={() => setActiveTab('chat')} className="mt-8 px-6 py-2.5 bg-white/5 border border-white/10 rounded-2xl text-[7px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all text-indigo-400">Return to Chat</button>
                   </div>
                 )}
               </div>
