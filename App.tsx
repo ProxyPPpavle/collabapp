@@ -52,10 +52,10 @@ const getFromStorage = (key: string) => {
 const safeClearUrl = () => {
   try {
     const url = new URL(window.location.href);
-    if (url.searchParams.has('room')) {
-      url.searchParams.delete('room');
-      window.history.replaceState({}, '', url.pathname);
-    }
+    let changed = false;
+    if (url.searchParams.has('room')) { url.searchParams.delete('room'); changed = true; }
+    if (url.searchParams.has('gdata')) { url.searchParams.delete('gdata'); changed = true; }
+    if (changed) window.history.replaceState({}, '', url.pathname);
   } catch (e) {}
 };
 
@@ -64,8 +64,9 @@ const safeClearUrl = () => {
 const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }> = ({ onAuth }) => {
   const params = new URLSearchParams(window.location.search);
   const roomToJoin = params.get('room');
+  const gdata = params.get('gdata');
   
-  const [mode, setMode] = useState<'entry' | 'login' | 'signup' | 'guest' | 'join-link' | 'join-code'>(roomToJoin ? 'join-link' : 'entry');
+  const [mode, setMode] = useState<'entry' | 'login' | 'signup' | 'guest' | 'join-link' | 'join-code'>( (roomToJoin || gdata) ? 'join-link' : 'entry');
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -76,6 +77,18 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
     e.preventDefault();
     const users: User[] = getFromStorage('cl_users') || [];
     
+    // Auto-import group if gdata is present
+    if (gdata) {
+      try {
+        const decoded = JSON.parse(atob(gdata));
+        const allGroups = getFromStorage('cl_groups') || [];
+        if (!allGroups.find((g: any) => g.id === decoded.id)) {
+           allGroups.push(decoded);
+           saveToStorage('cl_groups', allGroups);
+        }
+      } catch (err) { console.error("Failed to import group", err); }
+    }
+
     if (mode === 'guest' || mode === 'join-link' || mode === 'join-code') {
       const guest: User = {
         id: 'gst_' + Math.random().toString(36).substring(2, 9),
@@ -95,6 +108,10 @@ const AuthPage: React.FC<{ onAuth: (user: User, autoGroupId?: string) => void }>
         saveToStorage('cl_groups', [...all, newG]);
       } else if (mode === 'join-link') {
         targetRoomId = (roomToJoin || '').toUpperCase();
+        // If we have gdata but targetRoomId is missing (link only had gdata), try to use gdata id
+        if (!targetRoomId && gdata) {
+           try { targetRoomId = JSON.parse(atob(gdata)).id; } catch(e) {}
+        }
       } else {
         targetRoomId = roomCode.toUpperCase();
       }
@@ -260,6 +277,8 @@ export default function App() {
   }, [user]);
 
   const activeGroup = useMemo(() => groups.find(g => (g.id === activeGroupId)), [groups, activeGroupId]);
+  const isAdmin = useMemo(() => user && activeGroup && activeGroup.ownerId === user.id, [user, activeGroup]);
+
   const usersInCall = useMemo(() => {
     if (!activeGroup || !activeGroup.inCall) return [];
     return allUsers.filter(u => activeGroup.inCall!.includes(u.id));
@@ -285,7 +304,7 @@ export default function App() {
         setActiveGroupId(all[gIdx].id);
         safeClearUrl();
       } else { 
-        showToast("Lab not found!", 'err'); 
+        showToast("Finding Hub...", 'ok'); 
         setActiveGroupId('live-space');
       }
     } else {
@@ -354,8 +373,8 @@ export default function App() {
     if (idx > -1) {
       if (action === 'kick') {
         all[idx].members = all[idx].members.filter(m => m !== targetId);
-        sendSystemMessage(activeGroupId, `User removed by Admin.`);
-        showToast("Member kicked.");
+        sendSystemMessage(activeGroupId, `Member removed by Admin.`);
+        showToast("Kicked.");
       }
       saveToStorage('cl_groups', all);
       fetchData();
@@ -479,7 +498,7 @@ export default function App() {
            const result = await getFeedbackOnMessage(contextMessages, activeGroup?.name || "General Workspace");
            setAiFeedback(result);
         } else {
-           setAiFeedback("No message history available for analysis. Start a conversation to get AI insights.");
+           setAiFeedback("No message history available for analysis.");
         }
         setIsAnalyzing(false);
       };
@@ -623,16 +642,17 @@ export default function App() {
           </div>
         ) : (
           <>
-            <div className="h-14 border-b border-white/5 flex items-center justify-between px-4 sm:px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20">
-               <div className="flex items-center gap-3 min-w-0">
-                  <h2 className="font-black text-[12px] text-white italic uppercase tracking-tighter truncate">{activeGroup.name}</h2>
+            <div className="h-auto min-h-[56px] border-b border-white/5 flex flex-wrap items-center justify-between px-4 sm:px-8 bg-[#050505]/50 backdrop-blur-xl shrink-0 z-20 py-2">
+               <div className="flex items-center gap-2 sm:gap-3 min-w-0 mr-2">
+                  <h2 className="font-black text-[11px] sm:text-[12px] text-white italic uppercase tracking-tighter truncate max-w-[120px] sm:max-w-none">{activeGroup.name}</h2>
                   {activeGroupId !== 'live-space' && (
-                    <div className="flex gap-1.5">
+                    <div className="flex gap-1.5 shrink-0">
                        <button onClick={() => {
-                        const link = `${window.location.origin}${window.location.pathname}?room=${activeGroup.id}`;
-                        // Corrected redundant .clipboard property access
+                        // CROSS-DEVICE SYNC: Generate link with encoded group data
+                        const gdata = btoa(JSON.stringify({ id: activeGroup.id, name: activeGroup.name, ownerId: activeGroup.ownerId, members: activeGroup.members, createdAt: activeGroup.createdAt }));
+                        const link = `${window.location.origin}${window.location.pathname}?room=${activeGroup.id}&gdata=${gdata}`;
                         navigator.clipboard.writeText(link);
-                        showToast("Copied!");
+                        showToast("Invite Copied!");
                       }} className="flex items-center gap-1 px-2 py-1 bg-white/5 text-slate-400 hover:text-white rounded-lg transition-all text-[7px] font-black uppercase tracking-widest border border-white/5">
                         <Icons.Copy /> Link
                       </button>
@@ -643,17 +663,18 @@ export default function App() {
                   )}
                </div>
                
-               <div className="flex items-center gap-4">
+               <div className="flex items-center gap-2 sm:gap-4 mt-2 sm:mt-0">
                   {activeGroupId === 'live-space' && (
                     <div className="flex bg-white/5 rounded-xl p-0.5 border border-white/5">
-                      <button onClick={() => setActiveTab('chat')} className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Chat</button>
-                      <button onClick={() => setActiveTab('ask')} className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all ${activeTab === 'ask' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Feedback</button>
+                      <button onClick={() => setActiveTab('chat')} className={`px-2.5 py-1 rounded-lg text-[7px] sm:text-[8px] font-black uppercase tracking-widest transition-all ${activeTab === 'chat' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Chat</button>
+                      <button onClick={() => setActiveTab('ask')} className={`px-2.5 py-1 rounded-lg text-[7px] sm:text-[8px] font-black uppercase tracking-widest transition-all ${activeTab === 'ask' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>Insights</button>
                     </div>
                   )}
 
                   <div className="flex items-center gap-2">
-                     <div className={`w-1 h-1 rounded-full ${activeGroupId === 'live-space' ? 'bg-emerald-500' : 'bg-slate-500'} mobile-hide`}></div>
-                     <button onClick={() => setShowAbout(true)} className="text-[7px] bg-white/5 px-2 py-1 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5">Members</button>
+                     <button onClick={() => setShowAbout(true)} className="text-[7px] bg-white/5 px-2 py-1 rounded-lg uppercase font-black tracking-widest hover:bg-white/10 transition-all border border-white/5 flex items-center gap-1">
+                       <Icons.Users /> Members
+                     </button>
                   </div>
                </div>
             </div>
@@ -674,7 +695,7 @@ export default function App() {
                             key={msg.id} 
                             msg={msg} 
                             me={user!} 
-                            isAdmin={user.id === activeGroup?.ownerId}
+                            isAdmin={isAdmin}
                             onAvatarClick={() => setProfileUserId(msg.senderId)}
                             onReply={() => setReplyingTo(msg)} 
                             onEdit={(txt:string) => handleEditMessage(msg.id, txt)}
@@ -726,29 +747,27 @@ export default function App() {
                     </div>
                   </>
                 ) : (
-                  <div className="flex-1 flex flex-col items-center justify-center p-10 text-center animate-in fade-in slide-in-from-bottom-5 custom-scroll overflow-y-auto">
-                    <div className={`w-16 h-16 ${isAnalyzing ? 'animate-pulse bg-indigo-600/30' : 'bg-indigo-600/10'} text-indigo-500 rounded-3xl flex items-center justify-center mb-6`}>
+                  <div className="flex-1 flex flex-col items-center justify-center p-6 text-center animate-in fade-in slide-in-from-bottom-5 custom-scroll overflow-y-auto">
+                    <div className={`w-14 h-14 ${isAnalyzing ? 'animate-pulse bg-indigo-600/30' : 'bg-indigo-600/10'} text-indigo-500 rounded-3xl flex items-center justify-center mb-6`}>
                       <Icons.Sparkles />
                     </div>
-                    <h3 className="text-sm font-black uppercase italic tracking-widest text-white mb-2">Lab Analysis</h3>
-                    <p className="text-slate-500 text-[8px] uppercase font-bold tracking-widest mb-8">AI Intelligence Insights</p>
+                    <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-2">Research Insights</h3>
                     
-                    <div className="max-w-xl w-full bg-white/5 border border-white/10 rounded-[30px] p-8 text-left relative overflow-hidden shadow-2xl">
-                       <div className="absolute top-0 left-0 w-1.5 h-full bg-indigo-600"></div>
+                    <div className="max-w-xl w-full bg-white/5 border border-white/10 rounded-[30px] p-6 text-left relative overflow-hidden shadow-2xl">
+                       <div className="absolute top-0 left-0 w-1 h-full bg-indigo-600"></div>
                        {isAnalyzing ? (
                          <div className="space-y-4">
                            <div className="h-2 bg-white/10 rounded w-3/4 animate-pulse"></div>
                            <div className="h-2 bg-white/10 rounded w-full animate-pulse"></div>
-                           <div className="h-2 bg-white/10 rounded w-5/6 animate-pulse"></div>
                          </div>
                        ) : (
-                         <div className="text-[11px] leading-relaxed text-slate-300 italic whitespace-pre-wrap">
-                           {aiFeedback || "Start chatting in this lab to generate research summaries and actionable insights."}
+                         <div className="text-[10px] sm:text-[11px] leading-relaxed text-slate-300 italic whitespace-pre-wrap">
+                           {aiFeedback || "Start chatting to generate insights."}
                          </div>
                        )}
                     </div>
                     
-                    <button onClick={() => setActiveTab('chat')} className="mt-10 px-8 py-3 bg-white/5 border border-white/10 rounded-2xl text-[8px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all text-indigo-400">Return to Terminal</button>
+                    <button onClick={() => setActiveTab('chat')} className="mt-8 px-6 py-2.5 bg-white/5 border border-white/10 rounded-2xl text-[7px] font-black uppercase tracking-[0.2em] hover:bg-white/10 transition-all text-indigo-400">Return</button>
                   </div>
                 )}
               </div>
@@ -757,15 +776,15 @@ export default function App() {
               {activeGroupId !== 'live-space' && (
                 <div className="w-[260px] bg-[#0a0a0c] border-l border-white/5 flex flex-col shrink-0 mobile-hide">
                   <div className="p-4 border-b border-white/5 bg-indigo-600/5">
-                     <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest italic">ACTIVE CALL</span>
+                     <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest italic">STREAM</span>
                      <div className="mt-3 space-y-1.5">
                         {usersInCall.map(u => (
-                          <div key={u.id} className={`flex items-center gap-2.5 p-2 rounded-xl bg-white/5 border border-white/5 transition-all ${Math.random() > 0.8 ? 'ring-1 ring-emerald-500/20' : ''}`}>
-                            <img src={u.avatar} className={`w-6 h-6 rounded-lg ${Math.random() > 0.8 ? 'ring-1 ring-emerald-500 animate-pulse' : ''}`} />
+                          <div key={u.id} className={`flex items-center gap-2.5 p-2 rounded-xl bg-white/5 border border-white/5 transition-all`}>
+                            <img src={u.avatar} className={`w-6 h-6 rounded-lg`} />
                             <span className="text-[9px] font-black uppercase text-white tracking-tighter italic truncate">{u.username}</span>
                           </div>
                         ))}
-                        {usersInCall.length === 0 && <p className="text-[8px] text-slate-700 italic text-center py-4 uppercase font-bold tracking-widest">No active stream</p>}
+                        {usersInCall.length === 0 && <p className="text-[8px] text-slate-700 italic text-center py-4 uppercase font-bold tracking-widest">Quiet Room</p>}
                      </div>
                   </div>
                   <div className="p-4 border-b border-white/5 flex items-center justify-between">
@@ -779,7 +798,7 @@ export default function App() {
                         key={msg.id} 
                         file={msg.file!} 
                         sender={msg.senderName} 
-                        canDelete={user.id === activeGroup?.ownerId || user.id === msg.senderId}
+                        canDelete={isAdmin || user.id === msg.senderId}
                         onDelete={() => {
                           const msgKey = `cl_msgs_${activeGroupId}`;
                           const all = getFromStorage(msgKey) || [];
@@ -901,11 +920,11 @@ export default function App() {
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[500] flex items-center justify-center p-6" onClick={() => setShowAbout(false)}>
            <div className="bg-[#0f0f12] border border-white/10 rounded-3xl w-full max-w-sm p-6 shadow-2xl animate-in zoom-in-95" onClick={e => e.stopPropagation()}>
               <div className="flex justify-between items-center mb-6">
-                 <h3 className="font-black italic text-sm uppercase tracking-widest text-white">Lab Lab</h3>
+                 <h3 className="font-black italic text-sm uppercase tracking-widest text-white">Lab Hub</h3>
                  <button onClick={() => setShowAbout(false)} className="p-2 hover:bg-white/5 rounded-lg"><Icons.X /></button>
               </div>
               
-              {user.id === activeGroup.ownerId && (
+              {isAdmin && (
                 <div className="mb-6">
                    <span className="text-[7px] font-black uppercase text-indigo-400 tracking-widest block mb-3">Invite Friends</span>
                    <div className="flex flex-col gap-1.5 max-h-[150px] overflow-y-auto custom-scroll pr-1">
@@ -939,7 +958,7 @@ export default function App() {
                         {activeGroup?.ownerId === m.id && <span className="text-[6px] text-indigo-500 font-bold uppercase tracking-widest">Admin</span>}
                       </div>
                     </div>
-                    {user.id === activeGroup?.ownerId && m.id !== user.id && (
+                    {isAdmin && m.id !== user.id && (
                       <button onClick={() => handleAdminAction(m.id, 'kick')} className="text-[7px] font-black text-rose-500 uppercase px-2 py-1 bg-rose-500/10 rounded-lg hover:bg-rose-600 hover:text-white transition-all">Kick</button>
                     )}
                   </div>
@@ -998,16 +1017,16 @@ const MessageComponent = ({ msg, me, isAdmin, onAvatarClick, onReply, onReact, o
           onClick={(e) => { e.stopPropagation(); onAvatarClick(); }}
         />
       </div>
-      <div className={`flex flex-col max-w-[75%] relative ${msg.senderId === me.id ? 'items-end' : 'items-start ml-1'}`}>
+      <div className={`flex flex-col max-w-[85%] sm:max-w-[75%] relative ${msg.senderId === me.id ? 'items-end' : 'items-start ml-1'}`}>
         <span className="text-[7px] font-black uppercase tracking-[0.1em] mb-1 px-1 opacity-20 italic">
           {msg.senderName} • {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} {msg.isEdited && "(MODIFIED)"}
         </span>
         
-        <div className={`p-2.5 px-4 rounded-2xl text-[12px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
+        <div className={`p-2 sm:p-2.5 px-3 sm:px-4 rounded-2xl text-[11px] sm:text-[12px] leading-snug transition-all relative shadow-lg ${msg.senderId === me.id ? 'rounded-tr-none' : 'rounded-tl-none border border-white/5'}`} style={{ backgroundColor: msg.color || '#121216', color: contrastText }}>
           {isEditing ? (
-            <div className="flex flex-col gap-2 min-w-[200px]">
+            <div className="flex flex-col gap-2 min-w-[150px] sm:min-w-[200px]">
               <textarea 
-                className="bg-black/20 border border-white/10 rounded p-2 text-inherit outline-none resize-none text-[12px]" 
+                className="bg-black/20 border border-white/10 rounded p-2 text-inherit outline-none resize-none text-[11px]" 
                 value={editText} 
                 onChange={e => setEditText(e.target.value)}
                 onClick={e => e.stopPropagation()}
@@ -1025,7 +1044,7 @@ const MessageComponent = ({ msg, me, isAdmin, onAvatarClick, onReply, onReact, o
         {msg.reactions && msg.reactions.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-1.5">
             {msg.reactions.map((r: Reaction) => (
-              <button key={r.emoji} onClick={(e) => { e.stopPropagation(); onReact(msg.id, r.emoji); }} className={`px-2 py-0.5 rounded-full text-[8px] bg-white/5 border border-white/10 flex items-center gap-1 transition-all hover:bg-white/10 ${r.userIds.includes(me.id) ? 'bg-indigo-600/20 border-indigo-500' : ''}`}>
+              <button key={r.emoji} onClick={(e) => { e.stopPropagation(); onReact(msg.id, r.emoji); }} className={`px-1.5 py-0.5 rounded-full text-[7px] sm:text-[8px] bg-white/5 border border-white/10 flex items-center gap-1 transition-all hover:bg-white/10 ${r.userIds.includes(me.id) ? 'bg-indigo-600/20 border-indigo-500' : ''}`}>
                 <span>{r.emoji}</span> <span className="font-bold opacity-40">{r.userIds.length}</span>
               </button>
             ))}
@@ -1056,9 +1075,9 @@ const ChatInput: React.FC<{ onSend: (t: string) => void; disabled?: boolean }> =
   const [text, setText] = useState('');
   const handleSend = () => { if(text.trim() && !disabled) { onSend(text); setText(''); } };
   return (
-    <div className={`flex-1 flex items-end gap-2 bg-[#0f0f12] border border-white/5 rounded-2xl p-1.5 focus-within:border-indigo-500/30 transition-all ${disabled ? 'opacity-20 grayscale' : ''}`}>
-      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "MUTED" : "SIGNAL..."} className="flex-1 bg-transparent py-2 px-3 text-[12px] outline-none resize-none text-white placeholder:text-slate-800 font-bold uppercase italic custom-scroll" />
-      <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-3 rounded-xl transition-all shadow-lg active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white' : 'bg-white/5 text-slate-800'}`}><Icons.Send /></button>
+    <div className={`flex-1 flex items-end gap-2 bg-[#0f0f12] border border-white/5 rounded-2xl p-1 sm:p-1.5 focus-within:border-indigo-500/30 transition-all ${disabled ? 'opacity-20 grayscale' : ''}`}>
+      <textarea rows={1} value={text} disabled={disabled} onChange={e => setText(e.target.value)} onKeyDown={e => { if(e.key==='Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder={disabled ? "MUTED" : "SIGNAL..."} className="flex-1 bg-transparent py-2 px-3 text-[11px] sm:text-[12px] outline-none resize-none text-white placeholder:text-slate-800 font-bold uppercase italic custom-scroll" />
+      <button onClick={handleSend} disabled={disabled || !text.trim()} className={`p-2.5 sm:p-3 rounded-xl transition-all shadow-lg active:scale-95 ${text.trim() && !disabled ? 'bg-indigo-600 text-white' : 'bg-white/5 text-slate-800'}`}><Icons.Send /></button>
     </div>
   );
 };
@@ -1081,7 +1100,7 @@ const FileItem: React.FC<{ file: SharedFile, sender: string, canDelete: boolean,
       <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
         <button onClick={(e) => { e.stopPropagation(); onDownload(); }} className="p-1.5 bg-indigo-600 text-white rounded-lg shadow-lg hover:bg-indigo-500 scale-90" title="Get"><Icons.Download /></button>
         {canDelete && (
-          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1.5 bg-rose-600 text-white rounded-lg hover:bg-rose-500 scale-90" title="Delete"><Icons.X /></button>
+          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="p-1.5 bg-rose-600 text-white rounded-lg hover:bg-rose-600 scale-90" title="Delete"><Icons.X /></button>
         )}
       </div>
       <div className="cursor-pointer aspect-video bg-black flex items-center justify-center relative overflow-hidden" onClick={onPreview}>
